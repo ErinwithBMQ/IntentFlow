@@ -1,0 +1,33 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+server/.venv/
+
+# Node
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Runtime data
+runtime-data/
+
+# Editors and system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local scratch files
+tmp/
+
+# Private planning documents
+文档/

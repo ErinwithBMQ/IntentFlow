@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="IntentFlow target Todo demo" />
+    <title>Tasks · IntentFlow Demo</title>
+  </head>
+  <body>
+    <main class="todo-shell">
+      <p class="eyebrow">INTENTFLOW TARGET</p>
+      <div class="heading-row">
+        <div>
+          <h1>Today</h1>
+          <p>Keep the small things moving.</p>
+        </div>
+        <span id="task-count" class="task-count"></span>
+      </div>
+
+      <form id="task-form" class="task-form">
+        <input id="task-input" name="task" placeholder="Add a new task" autocomplete="off" />
+        <button type="submit">Add task</button>
+      </form>
+
+      <p class="demo-note">The add-task behavior is intentionally unfinished for the Agent demo.</p>
+      <ul id="task-list" class="task-list"></ul>
+    </main>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
+

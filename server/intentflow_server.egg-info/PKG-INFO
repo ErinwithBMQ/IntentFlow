@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: intentflow-server
+Version: 0.1.0
+Summary: Local API and Agent runtime for IntentFlow
+Requires-Python: >=3.11
+Requires-Dist: fastapi<1.0,>=0.115
+Requires-Dist: pydantic<3.0,>=2.10
+Requires-Dist: uvicorn[standard]<1.0,>=0.34
+Provides-Extra: dev
+Requires-Dist: httpx<1.0,>=0.28; extra == "dev"
+Requires-Dist: pytest<9.0,>=8.3; extra == "dev"
+Requires-Dist: pytest-asyncio<1.0,>=0.25; extra == "dev"
+Requires-Dist: ruff<1.0,>=0.9; extra == "dev"
