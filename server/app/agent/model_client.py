@@ -46,14 +46,20 @@ class OpenAIResponsesModelClient:
         *,
         api_key: str | None = None,
         base_url: str | None = None,
+        timeout_seconds: float = 45.0,
         client: AsyncOpenAI | None = None,
     ) -> None:
         if not model.strip():
             raise ValueError("model must not be empty")
         self.registry = registry
         self.model = model
-        self.client = client or AsyncOpenAI(api_key=api_key, base_url=base_url)
-        self._previous_response_id: str | None = None
+        self.client = client or AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout_seconds,
+            max_retries=0,
+        )
+        self._conversation: list[object] = []
         self._history_cursor = 0
 
     async def next_turn(
@@ -62,41 +68,37 @@ class OpenAIResponsesModelClient:
         history: list[AgentHistoryItem],
     ) -> ModelTurn:
         if not history:
-            self._previous_response_id = None
+            self._conversation = [self._intent_input(intent)]
             self._history_cursor = 0
 
-        input_items = self._build_input(intent, history)
+        input_items = [*self._conversation, *self._tool_outputs(history)]
         request: dict[str, object] = {
             "model": self.model,
             "instructions": MODEL_INSTRUCTIONS,
             "tools": self.registry.schemas(),
             "input": input_items,
         }
-        if self._previous_response_id is not None:
-            request["previous_response_id"] = self._previous_response_id
 
         response = await self.client.responses.create(**request)
         turn = self._to_model_turn(response)
-        self._previous_response_id = response.id
+        self._conversation = [*input_items, *response.output]
         self._history_cursor = len(history)
         return turn
 
-    def _build_input(
+    @staticmethod
+    def _intent_input(intent: IntentBrief) -> dict[str, object]:
+        return {
+            "role": "user",
+            "content": (
+                "Implement this IntentBrief in the controlled workspace:\n"
+                + intent.model_dump_json(indent=2)
+            ),
+        }
+
+    def _tool_outputs(
         self,
-        intent: IntentBrief,
         history: list[AgentHistoryItem],
     ) -> list[dict[str, object]]:
-        if self._previous_response_id is None:
-            return [
-                {
-                    "role": "user",
-                    "content": (
-                        "Implement this IntentBrief in the controlled workspace:\n"
-                        + intent.model_dump_json(indent=2)
-                    ),
-                }
-            ]
-
         return [
             {
                 "type": "function_call_output",

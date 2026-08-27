@@ -100,14 +100,13 @@ async def test_responses_client_maps_function_calls_and_continues_with_tool_resu
     assert fake_client.responses.requests[0]["model"] == "test-model"
     assert fake_client.responses.requests[0]["tools"] == registry.schemas()
     second_request = fake_client.responses.requests[1]
-    assert second_request["previous_response_id"] == "response-1"
-    assert second_request["input"] == [
-        {
-            "type": "function_call_output",
-            "call_id": "call-1",
-            "output": tool_result.model_dump_json(),
-        }
-    ]
+    assert "previous_response_id" not in second_request
+    assert first_response.output[0] in second_request["input"]
+    assert second_request["input"][-1] == {
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": tool_result.model_dump_json(),
+    }
 
 
 async def test_new_empty_history_starts_a_fresh_response_chain() -> None:
@@ -123,6 +122,7 @@ async def test_new_empty_history_starts_a_fresh_response_chain() -> None:
     await client.next_turn(make_intent(), [])
 
     assert "previous_response_id" not in fake_client.responses.requests[1]
+    assert len(fake_client.responses.requests[1]["input"]) == 1
 
 
 async def test_tool_schema_contains_visible_action_metadata() -> None:

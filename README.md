@@ -51,3 +51,15 @@ npm run build
 ```
 
 真实 `.env`、API Key 和 `runtime-data/` 不得提交到仓库。
+
+## 真实模型冒烟测试
+
+在根目录 `.env` 配置模型后执行：
+
+```powershell
+cd server
+.\.venv\Scripts\python.exe -u scripts\smoke_real_agent.py
+```
+
+脚本只修改 `runtime-data/real-agent-smoke/` 下的 Todo 临时副本，并输出每一步动作、
+原因、结果和最终验证证据，不会修改原始示例项目。

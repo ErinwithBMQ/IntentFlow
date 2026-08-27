@@ -6,6 +6,7 @@ Requires-Python: >=3.11
 Requires-Dist: fastapi<1.0,>=0.115
 Requires-Dist: openai<3.0,>=1.68
 Requires-Dist: pydantic<3.0,>=2.10
+Requires-Dist: python-dotenv<2.0,>=1.0
 Requires-Dist: uvicorn[standard]<1.0,>=0.34
 Provides-Extra: dev
 Requires-Dist: httpx<1.0,>=0.28; extra == "dev"
