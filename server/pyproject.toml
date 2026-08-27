@@ -9,6 +9,7 @@ description = "Local API and Agent runtime for IntentFlow"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1.0",
+  "openai>=1.68,<3.0",
   "pydantic>=2.10,<3.0",
   "uvicorn[standard]>=0.34,<1.0",
 ]
@@ -34,4 +35,3 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-

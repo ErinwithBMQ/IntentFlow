@@ -4,6 +4,7 @@ Version: 0.1.0
 Summary: Local API and Agent runtime for IntentFlow
 Requires-Python: >=3.11
 Requires-Dist: fastapi<1.0,>=0.115
+Requires-Dist: openai<3.0,>=1.68
 Requires-Dist: pydantic<3.0,>=2.10
 Requires-Dist: uvicorn[standard]<1.0,>=0.34
 Provides-Extra: dev

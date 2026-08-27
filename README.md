@@ -2,7 +2,8 @@
 
 IntentFlow 是一个轻量编程 Agent 工具：用户自由表达 Web 功能想法，AI 将其整理、实现并验证。
 
-当前处于阶段 0，仅包含可运行的前后端骨架和 Todo 示例项目。
+当前已完成阶段 1 的 Agent Runtime：包含受控本地工具、运行事件、终止规则、
+FakeModel 闭环和 OpenAI Responses 模型适配层。前端目前仍是运行骨架。
 
 ## 环境要求
 
@@ -50,4 +51,3 @@ npm run build
 ```
 
 真实 `.env`、API Key 和 `runtime-data/` 不得提交到仓库。
-
