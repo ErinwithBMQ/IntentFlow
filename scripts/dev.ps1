@@ -23,4 +23,12 @@ finally {
     Stop-Job -Job $serverJob -ErrorAction SilentlyContinue
     Receive-Job -Job $serverJob -ErrorAction SilentlyContinue
     Remove-Job -Job $serverJob -Force -ErrorAction SilentlyContinue
+
+    $listeners = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
+    foreach ($listener in $listeners) {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)" -ErrorAction SilentlyContinue
+        if ($process.CommandLine -like "*$serverRoot*uvicorn*app.main:app*") {
+            Stop-Process -Id $listener.OwningProcess -Force -ErrorAction SilentlyContinue
+        }
+    }
 }

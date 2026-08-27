@@ -149,6 +149,34 @@ async def test_stop_signal_ends_before_model_call(tmp_path) -> None:
     assert model.received_histories == []
 
 
+async def test_stop_signal_cancels_an_in_progress_model_call(tmp_path) -> None:
+    class SlowModel:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.cancelled = False
+
+        async def next_turn(self, intent, history):
+            del intent, history
+            self.started.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    stop_event = asyncio.Event()
+    model = SlowModel()
+    runner = AgentRunner(model, ToolRegistry(), ToolContext(tmp_path, {}, stop_event=stop_event))
+
+    run_task = asyncio.create_task(runner.run(make_intent()))
+    await model.started.wait()
+    stop_event.set()
+    result = await asyncio.wait_for(run_task, timeout=1)
+
+    assert result.status == "stopped"
+    assert model.cancelled is True
+
+
 async def test_step_limit_fails_an_unfinished_run(tmp_path) -> None:
     model = FakeModelClient(
         [ModelTurn(action="Still planning", reason="No terminal tool call yet.")]

@@ -5,6 +5,7 @@ from app.agent.model_client import ModelClient
 from app.agent.models import (
     AgentHistoryItem,
     IntentBrief,
+    ModelTurn,
     RunEvent,
     RunReport,
     RunResult,
@@ -56,7 +57,9 @@ class AgentRunner:
                 return await self._finish_stopped(step - 1)
 
             try:
-                turn = await self.model_client.next_turn(intent, history)
+                turn = await self._next_turn_or_stop(intent, history)
+                if turn is None:
+                    return await self._finish_stopped(step - 1)
             except Exception as error:
                 report = RunReport(
                     status="failed",
@@ -119,6 +122,26 @@ class AgentRunner:
             unresolved=["The model did not call report_result before the step limit"],
         )
         return await self._finish(report, self.max_steps)
+
+    async def _next_turn_or_stop(
+        self,
+        intent: IntentBrief,
+        history: list[AgentHistoryItem],
+    ) -> ModelTurn | None:
+        model_task = asyncio.create_task(self.model_client.next_turn(intent, history))
+        stop_task = asyncio.create_task(self.context.stop_event.wait())
+        done, _ = await asyncio.wait(
+            {model_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if stop_task in done and self.context.stop_event.is_set():
+            model_task.cancel()
+            await asyncio.gather(model_task, return_exceptions=True)
+            return None
+
+        stop_task.cancel()
+        await asyncio.gather(stop_task, return_exceptions=True)
+        return model_task.result()
 
     @staticmethod
     def _require_real_completion_evidence(
