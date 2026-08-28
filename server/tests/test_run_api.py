@@ -38,6 +38,7 @@ def fake_model_factory(_registry):
                         id="test",
                         name="run_command",
                         arguments={"command": "test"},
+                        related_requirement_ids=["REQ-1"],
                     )
                 ],
             ),
@@ -52,6 +53,13 @@ def fake_model_factory(_registry):
                             "status": "completed",
                             "summary": "临时副本已验证",
                             "evidence": ["test passed"],
+                            "requirements": [
+                                {
+                                    "requirement_id": "REQ-1",
+                                    "status": "verified",
+                                    "summary": "测试命令已通过",
+                                }
+                            ],
                         },
                     )
                 ],
@@ -109,6 +117,10 @@ async def test_run_api_copies_demo_and_streams_events(tmp_path, monkeypatch) -> 
         snapshot = await client.get(f"/api/runs/{run_id}")
         assert snapshot.json()["status"] == "completed"
         assert snapshot.json()["report"]["evidence"] == ["test exited with code 0"]
+        requirement = snapshot.json()["report"]["requirement_results"][0]
+        assert requirement["requirement_id"] == "REQ-1"
+        assert requirement["status"] == "verified"
+        assert requirement["evidence"] == ["test exited with code 0"]
 
         events = await client.get(f"/api/runs/{run_id}/events")
         assert events.status_code == 200

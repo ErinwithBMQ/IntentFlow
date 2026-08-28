@@ -6,7 +6,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from app.agent.models import RunReport, ToolCall, ToolResult
+from app.agent.models import RequirementClaim, RunReport, ToolCall, ToolResult
 
 
 class ToolContext:
@@ -36,6 +36,7 @@ class ToolContext:
 class ToolExecution(BaseModel):
     result: ToolResult
     report: RunReport | None = None
+    requirement_claims: list[RequirementClaim] = Field(default_factory=list)
 
 
 class BaseTool(ABC):
@@ -275,6 +276,7 @@ class ReportResultArguments(BaseModel):
     summary: str = Field(min_length=1)
     evidence: list[str] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
+    requirements: list[RequirementClaim]
 
 
 class ReportResultTool(BaseTool):
@@ -292,7 +294,12 @@ class ReportResultTool(BaseTool):
         if arguments.status == "completed" and not arguments.evidence:
             return _failed_execution(call, "A completed report requires at least one evidence item")
 
-        report = RunReport.model_validate(arguments.model_dump())
+        report = RunReport(
+            status=arguments.status,
+            summary=arguments.summary,
+            evidence=arguments.evidence,
+            unresolved=arguments.unresolved,
+        )
         return ToolExecution(
             result=ToolResult(
                 call_id=call.id,
@@ -302,6 +309,7 @@ class ReportResultTool(BaseTool):
                 output=report.model_dump_json(),
             ),
             report=report,
+            requirement_claims=arguments.requirements,
         )
 
 

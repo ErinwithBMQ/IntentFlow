@@ -24,7 +24,18 @@ async def test_completed_report_requires_evidence(tmp_path) -> None:
     call = ToolCall(
         id="report-1",
         name="report_result",
-        arguments={"status": "completed", "summary": "Done", "evidence": []},
+        arguments={
+            "status": "completed",
+            "summary": "Done",
+            "evidence": [],
+            "requirements": [
+                {
+                    "requirement_id": "REQ-1",
+                    "status": "verified",
+                    "summary": "Claimed result",
+                }
+            ],
+        },
     )
 
     execution = await registry.execute(call, ToolContext(tmp_path, {}))

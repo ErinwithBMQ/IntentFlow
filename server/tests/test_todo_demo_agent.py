@@ -30,9 +30,7 @@ async def test_agent_implements_and_verifies_todo_add_flow(tmp_path) -> None:
         ignore=shutil.ignore_patterns("node_modules", "dist"),
     )
 
-    old_import = (
-        'import { countOpenTasks, createTaskElement, initialTasks } from "./tasks";'
-    )
+    old_import = 'import { countOpenTasks, createTaskElement, initialTasks } from "./tasks";'
     new_import = (
         'import { countOpenTasks, createTask, createTaskElement, initialTasks } from "./tasks";'
     )
@@ -191,6 +189,18 @@ describe("createTask", () => {
                     status="completed",
                     summary="Todo add-task flow implemented and verified.",
                     evidence=["Vitest passed", "Vite production build passed"],
+                    requirements=[
+                        {
+                            "requirement_id": "REQ-ADD",
+                            "status": "verified",
+                            "summary": "Non-empty tasks can be added.",
+                        },
+                        {
+                            "requirement_id": "REQ-EMPTY",
+                            "status": "verified",
+                            "summary": "Blank tasks are rejected.",
+                        },
+                    ],
                 )
             ],
         ),

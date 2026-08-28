@@ -72,6 +72,15 @@ export type RunReport = {
   summary: string;
   evidence: string[];
   unresolved: string[];
+  requirement_results: RequirementResult[];
+};
+
+export type RequirementResult = {
+  requirement_id: string;
+  status: "verified" | "implemented" | "failed" | "unresolved";
+  summary: string;
+  related_files: string[];
+  evidence: string[];
 };
 
 export type RunSnapshot = {

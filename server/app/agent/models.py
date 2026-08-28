@@ -41,11 +41,26 @@ class ToolResult(BaseModel):
     output: str = ""
 
 
+class RequirementClaim(BaseModel):
+    requirement_id: str
+    status: Literal["verified", "implemented", "failed", "unresolved"]
+    summary: str
+
+
+class RequirementResult(BaseModel):
+    requirement_id: str
+    status: Literal["verified", "implemented", "failed", "unresolved"]
+    summary: str
+    related_files: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+
+
 class RunReport(BaseModel):
     status: Literal["completed", "partial", "failed"]
     summary: str
     evidence: list[str] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
+    requirement_results: list[RequirementResult] = Field(default_factory=list)
 
 
 class RunEvent(BaseModel):

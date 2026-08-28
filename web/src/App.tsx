@@ -17,6 +17,7 @@ import {
   FileCode2,
   Link2,
   LoaderCircle,
+  LocateFixed,
   Play,
   Plus,
   RotateCcw,
@@ -405,12 +406,55 @@ export function App() {
                 {run.events.map((event) => <RunEventItem event={event} key={event.sequence} />)}
               </div>
               {run.report && (
-                <div className={`final-report final-report--${run.status}`}>
-                  <span>最终报告</span>
-                  <strong>{run.report.summary}</strong>
-                  {run.report.evidence.map((item) => <small key={item}><Check size={12} />{item}</small>)}
-                  {run.report.unresolved.map((item) => <small key={item}><X size={12} />{item}</small>)}
-                </div>
+                <>
+                  <div className="requirement-results">
+                    <span className="requirement-results__title">需求结果</span>
+                    {run.report.requirement_results.map((result) => {
+                      const sourceIds = brief?.requirements.find(
+                        (requirement) => requirement.id === result.requirement_id,
+                      )?.source_ids ?? [];
+                      return (
+                        <article className="requirement-result" key={result.requirement_id}>
+                          <div className="requirement-result__heading">
+                            <span>{result.requirement_id}</span>
+                            <span className={`requirement-status requirement-status--${result.status}`}>
+                              {requirementStatusText[result.status]}
+                            </span>
+                            <button
+                              type="button"
+                              title="定位来源便签"
+                              aria-label={`定位 ${result.requirement_id} 的来源便签`}
+                              disabled={sourceIds.length === 0}
+                              onClick={() => highlightSources(sourceIds)}
+                            >
+                              <LocateFixed size={13} />
+                            </button>
+                          </div>
+                          <p>{result.summary}</p>
+                          {(result.related_files.length > 0 || result.evidence.length > 0) && (
+                            <details>
+                              <summary>
+                                {result.related_files.length} 个文件 · {result.evidence.length} 条证据
+                              </summary>
+                              {result.related_files.map((file) => (
+                                <code key={file}><FileCode2 size={11} />{file}</code>
+                              ))}
+                              {result.evidence.map((item) => (
+                                <small key={item}><Check size={11} />{item}</small>
+                              ))}
+                            </details>
+                          )}
+                        </article>
+                      );
+                    })}
+                  </div>
+                  <div className={`final-report final-report--${run.status}`}>
+                    <span>最终报告</span>
+                    <strong>{run.report.summary}</strong>
+                    {run.report.evidence.map((item) => <small key={item}><Check size={12} />{item}</small>)}
+                    {run.report.unresolved.map((item) => <small key={item}><X size={12} />{item}</small>)}
+                  </div>
+                </>
               )}
             </div>
           ) : !brief ? (
@@ -469,6 +513,13 @@ export function App() {
     </main>
   );
 }
+
+const requirementStatusText = {
+  verified: "已验证",
+  implemented: "已实现",
+  failed: "失败",
+  unresolved: "未解决",
+} as const;
 
 function RunEventItem({ event }: { event: RunEvent }) {
   const isCommand = event.tool_name === "run_command";

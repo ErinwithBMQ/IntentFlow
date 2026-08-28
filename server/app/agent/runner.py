@@ -6,6 +6,8 @@ from app.agent.models import (
     AgentHistoryItem,
     IntentBrief,
     ModelTurn,
+    RequirementClaim,
+    RequirementResult,
     RunEvent,
     RunReport,
     RunResult,
@@ -19,6 +21,127 @@ EventSink = Callable[[RunEvent], Awaitable[None]]
 
 async def _ignore_event(event: RunEvent) -> None:
     del event
+
+
+class _RequirementTracker:
+    def __init__(self, intent: IntentBrief) -> None:
+        self.requirement_ids = [requirement.id for requirement in intent.requirements]
+        self._known_ids = set(self.requirement_ids)
+        self.related_files = {requirement_id: [] for requirement_id in self.requirement_ids}
+        self.evidence = {requirement_id: [] for requirement_id in self.requirement_ids}
+        self.failures = {requirement_id: [] for requirement_id in self.requirement_ids}
+
+    def related_ids(self, call: ToolCall, turn_ids: list[str]) -> list[str]:
+        candidates = call.related_requirement_ids or turn_ids
+        return list(dict.fromkeys(value for value in candidates if value in self._known_ids))
+
+    def record(
+        self,
+        call: ToolCall,
+        execution: ToolExecution,
+        related_ids: list[str],
+    ) -> None:
+        if call.name == "apply_patch" and execution.result.ok:
+            self._clear_evidence()
+            path = call.arguments.get("path")
+            if path is not None:
+                for requirement_id in related_ids:
+                    self._append_unique(self.related_files[requirement_id], str(path))
+
+        if call.name == "run_command":
+            if execution.result.ok:
+                for requirement_id in related_ids:
+                    self._append_unique(
+                        self.evidence[requirement_id],
+                        execution.result.summary,
+                    )
+            else:
+                self._clear_evidence()
+
+        if not execution.result.ok:
+            for requirement_id in related_ids:
+                self._append_unique(
+                    self.failures[requirement_id],
+                    execution.result.summary,
+                )
+
+    def claims_error(self, claims: list[RequirementClaim]) -> str | None:
+        claim_ids = [claim.requirement_id for claim in claims]
+        duplicates = sorted(
+            requirement_id
+            for requirement_id in set(claim_ids)
+            if claim_ids.count(requirement_id) > 1
+        )
+        unknown = sorted(set(claim_ids) - self._known_ids)
+        missing = sorted(self._known_ids - set(claim_ids))
+        if not duplicates and not unknown and not missing:
+            return None
+
+        problems: list[str] = []
+        if missing:
+            problems.append(f"missing: {', '.join(missing)}")
+        if unknown:
+            problems.append(f"unknown: {', '.join(unknown)}")
+        if duplicates:
+            problems.append(f"duplicated: {', '.join(duplicates)}")
+        return (
+            "Requirement claims must cover each IntentBrief requirement exactly once ("
+            + "; ".join(problems)
+            + ")"
+        )
+
+    def results(self, claims: list[RequirementClaim] | None = None) -> list[RequirementResult]:
+        claim_by_id = {claim.requirement_id: claim for claim in claims or []}
+        return [
+            self._result(requirement_id, claim_by_id.get(requirement_id))
+            for requirement_id in self.requirement_ids
+        ]
+
+    def _result(
+        self,
+        requirement_id: str,
+        claim: RequirementClaim | None,
+    ) -> RequirementResult:
+        related_files = self.related_files[requirement_id]
+        evidence = self.evidence[requirement_id]
+        failures = self.failures[requirement_id]
+
+        if claim is not None and claim.status in {"failed", "unresolved"}:
+            status = claim.status
+        elif evidence:
+            status = "verified"
+        elif related_files:
+            status = "implemented"
+        elif failures:
+            status = "failed"
+        else:
+            status = "unresolved"
+
+        default_summary = {
+            "verified": "已通过关联的测试或构建验证",
+            "implemented": "已修改关联文件，但缺少需求级验证证据",
+            "failed": failures[-1] if failures else "实现或验证失败",
+            "unresolved": "未获得实现或验证记录",
+        }[status]
+        summary = default_summary
+        if claim is not None and not (claim.status == "verified" and status != "verified"):
+            summary = claim.summary
+        return RequirementResult(
+            requirement_id=requirement_id,
+            status=status,
+            summary=summary,
+            related_files=list(related_files),
+            evidence=list(evidence),
+        )
+
+    def _clear_evidence(self) -> None:
+        for items in self.evidence.values():
+            items.clear()
+
+    @staticmethod
+    def _append_unique(items: list[str], value: str) -> None:
+        if value not in items:
+            items.append(value)
 
 
 class AgentRunner:
@@ -44,6 +167,7 @@ class AgentRunner:
         self.events = []
         history: list[AgentHistoryItem] = []
         verification_evidence: list[str] = []
+        tracker = _RequirementTracker(intent)
         await self._emit(
             kind="run_started",
             phase="planning",
@@ -54,19 +178,19 @@ class AgentRunner:
 
         for step in range(1, self.max_steps + 1):
             if self.context.stop_event.is_set():
-                return await self._finish_stopped(step - 1)
+                return await self._finish_stopped(step - 1, tracker)
 
             try:
                 turn = await self._next_turn_or_stop(intent, history)
                 if turn is None:
-                    return await self._finish_stopped(step - 1)
+                    return await self._finish_stopped(step - 1, tracker)
             except Exception as error:
                 report = RunReport(
                     status="failed",
                     summary="模型无法给出下一步动作",
                     unresolved=[str(error)],
                 )
-                return await self._finish(report, step)
+                return await self._finish(report, step, tracker)
 
             history.append(turn)
             await self._emit(
@@ -80,9 +204,10 @@ class AgentRunner:
 
             for call in turn.tool_calls:
                 if self.context.stop_event.is_set():
-                    return await self._finish_stopped(step)
+                    return await self._finish_stopped(step, tracker)
 
-                await self._emit_tool_started(call, turn.reason, turn.related_requirement_ids)
+                related_ids = tracker.related_ids(call, turn.related_requirement_ids)
+                await self._emit_tool_started(call, turn.reason, related_ids)
                 execution = await self.registry.execute(call, self.context)
                 if call.name == "apply_patch" and execution.result.ok:
                     verification_evidence.clear()
@@ -91,6 +216,8 @@ class AgentRunner:
                         verification_evidence.append(execution.result.summary)
                     else:
                         verification_evidence.clear()
+                tracker.record(call, execution, related_ids)
+                execution = self._attach_requirement_results(call, execution, tracker)
                 execution = self._require_real_completion_evidence(
                     call,
                     execution,
@@ -103,16 +230,14 @@ class AgentRunner:
                     status="succeeded" if execution.result.ok else "failed",
                     action=execution.result.summary,
                     reason=call.reason or turn.reason,
-                    related_requirement_ids=(
-                        call.related_requirement_ids or turn.related_requirement_ids
-                    ),
+                    related_requirement_ids=related_ids,
                     tool_name=call.name,
                     target=self._tool_target(call),
                     evidence=[execution.result.summary] if execution.result.ok else [],
                 )
 
                 if execution.report is not None:
-                    return await self._finish(execution.report, step)
+                    return await self._finish(execution.report, step, tracker)
 
             await asyncio.sleep(0)
 
@@ -121,7 +246,7 @@ class AgentRunner:
             summary=f"Agent reached the {self.max_steps}-step limit",
             unresolved=["The model did not call report_result before the step limit"],
         )
-        return await self._finish(report, self.max_steps)
+        return await self._finish(report, self.max_steps, tracker)
 
     async def _next_turn_or_stop(
         self,
@@ -142,6 +267,32 @@ class AgentRunner:
         stop_task.cancel()
         await asyncio.gather(stop_task, return_exceptions=True)
         return model_task.result()
+
+    @staticmethod
+    def _attach_requirement_results(
+        call: ToolCall,
+        execution: ToolExecution,
+        tracker: _RequirementTracker,
+    ) -> ToolExecution:
+        if execution.report is None:
+            return execution
+
+        claims_error = tracker.claims_error(execution.requirement_claims)
+        if claims_error is not None:
+            return ToolExecution(
+                result=ToolResult(
+                    call_id=call.id,
+                    tool_name=call.name,
+                    ok=False,
+                    summary="Requirement claims failed validation",
+                    output=claims_error,
+                )
+            )
+
+        report = execution.report.model_copy(
+            update={"requirement_results": tracker.results(execution.requirement_claims)}
+        )
+        return execution.model_copy(update={"report": report})
 
     @staticmethod
     def _require_real_completion_evidence(
@@ -184,7 +335,14 @@ class AgentRunner:
             target=self._tool_target(call),
         )
 
-    async def _finish(self, report: RunReport, steps: int) -> RunResult:
+    async def _finish(
+        self,
+        report: RunReport,
+        steps: int,
+        tracker: _RequirementTracker,
+    ) -> RunResult:
+        if not report.requirement_results:
+            report = report.model_copy(update={"requirement_results": tracker.results()})
         status = "succeeded" if report.status == "completed" else "failed"
         await self._emit(
             kind="run_finished",
@@ -196,7 +354,11 @@ class AgentRunner:
         )
         return RunResult(status=report.status, report=report, events=self.events, steps=steps)
 
-    async def _finish_stopped(self, steps: int) -> RunResult:
+    async def _finish_stopped(
+        self,
+        steps: int,
+        tracker: _RequirementTracker,
+    ) -> RunResult:
         report = RunReport(
             status="partial",
             summary="Agent run stopped by user",
@@ -209,7 +371,12 @@ class AgentRunner:
             action=report.summary,
             reason="收到停止信号",
         )
-        return RunResult(status="stopped", report=report, events=self.events, steps=steps)
+        return RunResult(
+            status="stopped",
+            report=report.model_copy(update={"requirement_results": tracker.results()}),
+            events=self.events,
+            steps=steps,
+        )
 
     async def _emit(self, **values: object) -> None:
         event = RunEvent(sequence=len(self.events) + 1, **values)

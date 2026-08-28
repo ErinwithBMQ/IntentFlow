@@ -66,6 +66,13 @@ async def test_fake_model_completes_a_tool_loop(tmp_path) -> None:
                         "status": "completed",
                         "summary": "Updated and verified the requested behavior.",
                         "evidence": ["test command exited with code 0"],
+                        "requirements": [
+                            {
+                                "requirement_id": "REQ-1",
+                                "status": "verified",
+                                "summary": "The requested value was updated and tested.",
+                            }
+                        ],
                     },
                 )
             ],
@@ -93,6 +100,11 @@ async def test_fake_model_completes_a_tool_loop(tmp_path) -> None:
     assert any(event.tool_name == "run_command" for event in result.events)
     assert len(model.received_histories[-1]) == 6
     assert result.report.evidence == ["test exited with code 0"]
+    requirement = result.report.requirement_results[0]
+    assert requirement.requirement_id == "REQ-1"
+    assert requirement.status == "verified"
+    assert requirement.related_files == ["value.js"]
+    assert requirement.evidence == ["test exited with code 0"]
 
 
 async def test_tool_failure_is_returned_to_the_model(tmp_path) -> None:
@@ -116,6 +128,13 @@ async def test_tool_failure_is_returned_to_the_model(tmp_path) -> None:
                             "status": "failed",
                             "summary": "The requested path was rejected.",
                             "unresolved": ["Path escapes the workspace"],
+                            "requirements": [
+                                {
+                                    "requirement_id": "REQ-1",
+                                    "status": "failed",
+                                    "summary": "The requested path was rejected.",
+                                }
+                            ],
                         },
                     )
                 ],
@@ -203,6 +222,13 @@ async def test_model_cannot_claim_completion_without_real_verification(tmp_path)
                             "status": "completed",
                             "summary": "Done",
                             "evidence": ["tests passed"],
+                            "requirements": [
+                                {
+                                    "requirement_id": "REQ-1",
+                                    "status": "verified",
+                                    "summary": "Claimed without running a command.",
+                                }
+                            ],
                         },
                     )
                 ],
@@ -232,6 +258,7 @@ async def test_edit_invalidates_earlier_verification(tmp_path) -> None:
             ModelTurn(
                 action="Run an early test",
                 reason="Establish the initial state.",
+                related_requirement_ids=["REQ-1"],
                 tool_calls=[
                     ToolCall(id="call-1", name="run_command", arguments={"command": "test"})
                 ],
@@ -239,6 +266,7 @@ async def test_edit_invalidates_earlier_verification(tmp_path) -> None:
             ModelTurn(
                 action="Edit after testing",
                 reason="This makes the earlier evidence stale.",
+                related_requirement_ids=["REQ-1"],
                 tool_calls=[
                     ToolCall(
                         id="call-2",
@@ -254,6 +282,7 @@ async def test_edit_invalidates_earlier_verification(tmp_path) -> None:
             ModelTurn(
                 action="Claim completion",
                 reason="Try to reuse stale evidence.",
+                related_requirement_ids=["REQ-1"],
                 tool_calls=[
                     ToolCall(
                         id="call-3",
@@ -262,6 +291,13 @@ async def test_edit_invalidates_earlier_verification(tmp_path) -> None:
                             "status": "completed",
                             "summary": "Done",
                             "evidence": ["the earlier test passed"],
+                            "requirements": [
+                                {
+                                    "requirement_id": "REQ-1",
+                                    "status": "verified",
+                                    "summary": "Try to reuse stale evidence.",
+                                }
+                            ],
                         },
                     )
                 ],
@@ -282,3 +318,98 @@ async def test_edit_invalidates_earlier_verification(tmp_path) -> None:
 
     assert result.status == "failed"
     assert result.report.summary.endswith("step limit")
+    requirement = result.report.requirement_results[0]
+    assert requirement.status == "implemented"
+    assert requirement.related_files == ["value.js"]
+    assert requirement.evidence == []
+
+
+async def test_runner_downgrades_unverified_requirement_claim_to_implemented(tmp_path) -> None:
+    source = tmp_path / "value.js"
+    source.write_text("export const value = 1;\n", encoding="utf-8")
+    model = FakeModelClient(
+        [
+            ModelTurn(
+                action="Edit the requested value",
+                reason="Implement the requirement.",
+                related_requirement_ids=["REQ-1"],
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="apply_patch",
+                        arguments={
+                            "path": "value.js",
+                            "old_text": "value = 1",
+                            "new_text": "value = 2",
+                        },
+                    )
+                ],
+            ),
+            ModelTurn(
+                action="Report without verification",
+                reason="No command was run.",
+                related_requirement_ids=["REQ-1"],
+                tool_calls=[
+                    ToolCall(
+                        id="call-2",
+                        name="report_result",
+                        arguments={
+                            "status": "partial",
+                            "summary": "Implemented but not tested.",
+                            "requirements": [
+                                {
+                                    "requirement_id": "REQ-1",
+                                    "status": "verified",
+                                    "summary": "The model claims this is verified.",
+                                }
+                            ],
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    result = await AgentRunner(model, ToolRegistry(), ToolContext(tmp_path, {})).run(make_intent())
+
+    requirement = result.report.requirement_results[0]
+    assert result.status == "partial"
+    assert requirement.status == "implemented"
+    assert requirement.summary == "已修改关联文件，但缺少需求级验证证据"
+    assert requirement.related_files == ["value.js"]
+    assert requirement.evidence == []
+
+
+async def test_runner_rejects_incomplete_requirement_claims(tmp_path) -> None:
+    model = FakeModelClient(
+        [
+            ModelTurn(
+                action="Report an unknown requirement",
+                reason="Exercise claim validation.",
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="report_result",
+                        arguments={
+                            "status": "failed",
+                            "summary": "Invalid claims",
+                            "requirements": [
+                                {
+                                    "requirement_id": "REQ-UNKNOWN",
+                                    "status": "failed",
+                                    "summary": "Wrong requirement ID",
+                                }
+                            ],
+                        },
+                    )
+                ],
+            )
+        ]
+    )
+    runner = AgentRunner(model, ToolRegistry(), ToolContext(tmp_path, {}), max_steps=1)
+
+    result = await runner.run(make_intent())
+
+    tool_event = next(event for event in result.events if event.kind == "tool_finished")
+    assert result.status == "failed"
+    assert tool_event.action == "Requirement claims failed validation"

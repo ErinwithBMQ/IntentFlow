@@ -37,9 +37,7 @@ def make_intent() -> IntentBrief:
     return IntentBrief(
         title="Add a task",
         goal="Allow non-empty tasks to be added.",
-        requirements=[
-            IntentRequirement(id="REQ-1", description="Submitting text creates a task.")
-        ],
+        requirements=[IntentRequirement(id="REQ-1", description="Submitting text creates a task.")],
     )
 
 
@@ -134,3 +132,9 @@ async def test_tool_schema_contains_visible_action_metadata() -> None:
     assert "_intentflow" in read_file_schema["parameters"]["required"]
     metadata = read_file_schema["parameters"]["properties"]["_intentflow"]
     assert metadata["required"] == ["action", "reason", "related_requirement_ids"]
+
+    report_schema = next(
+        schema for schema in ToolRegistry().schemas() if schema["name"] == "report_result"
+    )
+    assert "requirements" in report_schema["parameters"]["required"]
+    assert "requirements" in report_schema["parameters"]["properties"]
