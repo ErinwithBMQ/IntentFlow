@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from app.agent.model_client import ModelClient, OpenAIResponsesModelClient
 from app.agent.models import IntentBrief, RunEvent, RunReport, RunResult
-from app.agent.runner import AgentRunner
+from app.agent.runner import DEFAULT_MAX_STEPS, AgentRunner
 from app.agent.tools import ToolContext, ToolRegistry
 
 
@@ -75,11 +75,15 @@ class RunManager:
         *,
         model_client_factory: Callable[[ToolRegistry], ModelClient] | None = None,
         command_factory: Callable[[Path], dict[str, tuple[str, ...]]] | None = None,
+        max_steps: int = DEFAULT_MAX_STEPS,
     ) -> None:
+        if max_steps < 1:
+            raise ValueError("max_steps must be at least 1")
         self.repository_root = repository_root.resolve()
         self.records: dict[str, RunRecord] = {}
         self.model_client_factory = model_client_factory
         self.command_factory = command_factory
+        self.max_steps = max_steps
 
     def start(self, intent: IntentBrief) -> RunSnapshot:
         if any(record.status == "running" for record in self.records.values()):
@@ -127,7 +131,7 @@ class RunManager:
             model_client,
             registry,
             context,
-            max_steps=8,
+            max_steps=self.max_steps,
             event_sink=record.add_event,
         )
         record.task = asyncio.create_task(self._execute(record, runner, intent))

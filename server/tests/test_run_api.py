@@ -68,6 +68,63 @@ def fake_model_factory(_registry):
     )
 
 
+def ninth_turn_report_model_factory(_registry):
+    inspection_turns = [
+        ModelTurn(
+            action=f"检查项目文件 {index}",
+            reason="在提交结果前完成必要检查",
+            related_requirement_ids=["REQ-1"],
+            tool_calls=[
+                ToolCall(
+                    id=f"read-{index}",
+                    name="read_file",
+                    arguments={"path": "source.txt"},
+                )
+            ],
+        )
+        for index in range(1, 8)
+    ]
+    return FakeModelClient(
+        [
+            *inspection_turns,
+            ModelTurn(
+                action="运行第八轮验证",
+                reason="实现完成后获取真实验证证据",
+                related_requirement_ids=["REQ-1"],
+                tool_calls=[
+                    ToolCall(
+                        id="test-on-eight",
+                        name="run_command",
+                        arguments={"command": "test"},
+                    )
+                ],
+            ),
+            ModelTurn(
+                action="在第九轮提交结果",
+                reason="验证已经通过",
+                tool_calls=[
+                    ToolCall(
+                        id="report-on-nine",
+                        name="report_result",
+                        arguments={
+                            "status": "completed",
+                            "summary": "九轮任务已完成",
+                            "evidence": ["test passed"],
+                            "requirements": [
+                                {
+                                    "requirement_id": "REQ-1",
+                                    "status": "verified",
+                                    "summary": "第八轮测试通过",
+                                }
+                            ],
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+
 def command_factory(_workspace: Path) -> dict[str, tuple[str, ...]]:
     return {"test": (sys.executable, "-c", "print('ok')")}
 
@@ -134,3 +191,43 @@ async def test_run_api_rejects_unknown_run() -> None:
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.get("/api/runs/missing")
     assert response.status_code == 404
+
+
+async def test_run_api_allows_a_ninth_turn_for_the_final_report(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    make_repository(tmp_path)
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=ninth_turn_report_model_factory,
+        command_factory=command_factory,
+    )
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    payload = {
+        "intent": {
+            "title": "验证运行预算",
+            "goal": "第八轮验证后在第九轮报告",
+            "requirements": [
+                {
+                    "id": "REQ-1",
+                    "description": "允许第九轮提交报告",
+                    "acceptance_criteria": ["最终状态为 completed"],
+                    "source_ids": ["note-1"],
+                }
+            ],
+            "constraints": [],
+        }
+    }
+
+    transport = ASGITransport(app=main_module.app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        created = await client.post("/api/runs", json=payload)
+        assert created.status_code == 201
+        run_id = created.json()["id"]
+        await wait_until_finished(manager, run_id)
+        snapshot = await client.get(f"/api/runs/{run_id}")
+
+    assert snapshot.json()["status"] == "completed"
+    assert snapshot.json()["report"]["summary"] == "九轮任务已完成"
+    assert snapshot.json()["report"]["requirement_results"][0]["status"] == "verified"

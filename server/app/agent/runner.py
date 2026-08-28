@@ -17,6 +17,7 @@ from app.agent.models import (
 from app.agent.tools import ToolContext, ToolExecution, ToolRegistry
 
 EventSink = Callable[[RunEvent], Awaitable[None]]
+DEFAULT_MAX_STEPS = 12
 
 
 async def _ignore_event(event: RunEvent) -> None:
@@ -151,7 +152,7 @@ class AgentRunner:
         registry: ToolRegistry,
         context: ToolContext,
         *,
-        max_steps: int = 12,
+        max_steps: int = DEFAULT_MAX_STEPS,
         event_sink: EventSink = _ignore_event,
     ) -> None:
         if max_steps < 1:
