@@ -1,12 +1,20 @@
 from pathlib import Path
 from typing import Literal
 
+from dotenv import dotenv_values
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.agent.models import IntentBrief
-from app.intent import CanvasCompileRequest, CanvasCompileResponse, compile_canvas
+from app.intent import (
+    AIIntentCompiler,
+    CanvasCompileRequest,
+    CanvasCompileResponse,
+    IntentCompileError,
+    compile_canvas,
+    validate_canvas_input,
+)
 from app.runs import RunManager, RunSnapshot
 
 
@@ -53,10 +61,48 @@ async def get_project() -> ProjectResponse:
 @app.post("/api/intent/compile", response_model=CanvasCompileResponse)
 async def compile_intent(request: CanvasCompileRequest) -> CanvasCompileResponse:
     try:
-        brief = compile_canvas(request.canvas)
+        validate_canvas_input(request.canvas)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return CanvasCompileResponse(brief=brief)
+
+    if request.compiler == "local":
+        try:
+            brief = compile_canvas(request.canvas)
+        except (IntentCompileError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return CanvasCompileResponse(
+            brief=brief,
+            compiler="local",
+            notice="AI 整理未使用；当前结果来自用户主动选择的本地规则降级。",
+        )
+
+    try:
+        compiler = create_ai_intent_compiler()
+        brief = await compiler.compile(request.canvas)
+    except ValueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except IntentCompileError as error:
+        raise HTTPException(status_code=502, detail=f"AI 意图整理失败：{error}") from error
+    return CanvasCompileResponse(
+        brief=brief,
+        compiler="ai",
+        notice="已使用真实模型整理，并通过需求编号和来源便签校验。",
+    )
+
+
+def create_ai_intent_compiler() -> AIIntentCompiler:
+    config = dotenv_values(repository_root / ".env")
+    api_key = (config.get("OPENAI_API_KEY") or "").strip()
+    model = (config.get("OPENAI_MODEL") or "").strip()
+    base_url = (config.get("OPENAI_BASE_URL") or "").strip() or None
+    if not api_key or not model:
+        raise ValueError("请先在根目录 .env 配置 OPENAI_API_KEY 和 OPENAI_MODEL")
+    return AIIntentCompiler(
+        model,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=120.0,
+    )
 
 
 @app.post("/api/runs", response_model=RunSnapshot, status_code=201)

@@ -54,11 +54,13 @@ describe("getHealth", () => {
       compiler: "local",
       notice: "使用本地基线整理。",
     };
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(result), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(result), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -67,7 +69,16 @@ describe("getHealth", () => {
       "/api/intent/compile",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ canvas }),
+        body: JSON.stringify({ canvas, compiler: "ai" }),
+      }),
+    );
+
+    await compileIntent(canvas, "local");
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/intent/compile",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ canvas, compiler: "local" }),
       }),
     );
   });

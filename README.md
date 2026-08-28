@@ -2,7 +2,7 @@
 
 IntentFlow 是一个轻量编程 Agent 工具：用户自由表达 Web 功能想法，AI 将其整理、实现并验证。
 
-当前已完成阶段 3 的最小链路：自由便签画布、IntentBrief 编译、运行 Agent、
+当前已完成阶段 3 的最小链路：自由便签画布、真实模型 IntentBrief 编译、运行 Agent、
 实时事件时间线、停止任务，以及测试和构建证据展示。
 
 ## 环境要求
@@ -37,6 +37,9 @@ npm install
 `examples/todo-demo` 复制到 `runtime-data/runs/<运行ID>/todo-demo`，Agent 只修改副本。
 原始 Todo 示例不会被改变，可以重复演示。
 
+“整理意图”默认调用真实模型。AI 编译失败时不会自动运行或静默降级；界面会显示错误，
+用户可主动点击“使用本地规则整理”，并在结果中看到明确的降级标识。
+
 ## 检查
 
 ```powershell
@@ -67,6 +70,13 @@ cd server
 
 脚本只修改 `runtime-data/real-agent-smoke/` 下的 Todo 临时副本，并输出每一步动作、
 原因、结果和最终验证证据，不会修改原始示例项目。
+
+Intent Compiler 的无连线便签、纯文字和矛盾输入场景可单独执行：
+
+```powershell
+cd server
+.\.venv\Scripts\python.exe -u scripts\smoke_real_intent_compiler.py
+```
 
 当前模型适配层使用 OpenAI Responses API。`OPENAI_BASE_URL` 必须指向兼容 Responses
 协议的服务地址；Anthropic 协议地址不能直接使用，否则会返回 404。

@@ -32,9 +32,10 @@ class IntentCanvas(BaseModel):
 
 class CanvasCompileRequest(BaseModel):
     canvas: IntentCanvas
+    compiler: Literal["ai", "local"] = "ai"
 
 
 class CanvasCompileResponse(BaseModel):
     brief: IntentBrief
-    compiler: Literal["local"] = "local"
-    notice: str = "当前使用本地基线整理。"
+    compiler: Literal["ai", "local"]
+    notice: str

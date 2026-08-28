@@ -52,6 +52,7 @@ import {
 
 type ConnectionState = "checking" | "connected" | "failed";
 type CompileState = "idle" | "compiling" | "completed" | "failed";
+type CompilerKind = "ai" | "local";
 
 const phases = ["表达想法", "整理意图", "修改代码", "运行验证"];
 const STORAGE_KEY = "intentflow.canvas.v1";
@@ -80,6 +81,7 @@ export function App() {
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [project, setProject] = useState<ProjectResponse | null>(null);
   const [brief, setBrief] = useState<IntentBrief | null>(null);
+  const [compilerKind, setCompilerKind] = useState<CompilerKind | null>(null);
   const [compilerNotice, setCompilerNotice] = useState("");
   const [compileState, setCompileState] = useState<CompileState>("idle");
   const [compileError, setCompileError] = useState("");
@@ -112,6 +114,14 @@ export function App() {
 
   useEffect(() => () => closeRunStream.current?.(), []);
 
+  const resetCompilation = useCallback(() => {
+    setBrief(null);
+    setCompilerKind(null);
+    setCompilerNotice("");
+    setCompileError("");
+    setCompileState("idle");
+  }, []);
+
   const updateNote = useCallback(
     (id: string, text: string, label: CanvasNoteLabel | null) => {
       setNodes((currentNodes) =>
@@ -119,10 +129,9 @@ export function App() {
           node.id === id ? { ...node, data: { ...node.data, text, label } } : node,
         ),
       );
-      setBrief(null);
-      setCompileState("idle");
+      resetCompilation();
     },
-    [setNodes],
+    [resetCompilation, setNodes],
   );
 
   const removeNote = useCallback(
@@ -131,10 +140,9 @@ export function App() {
       setEdges((currentEdges) =>
         currentEdges.filter((edge) => edge.source !== id && edge.target !== id),
       );
-      setBrief(null);
-      setCompileState("idle");
+      resetCompilation();
     },
-    [setEdges, setNodes],
+    [resetCompilation, setEdges, setNodes],
   );
 
   const callbacks = useMemo(
@@ -147,32 +155,29 @@ export function App() {
       setEdges((currentEdges) =>
         addEdge({ ...params, label: connectionLabel.trim() || "相关" }, currentEdges),
       );
-      setBrief(null);
-      setCompileState("idle");
+      resetCompilation();
     },
-    [connectionLabel, setEdges],
+    [connectionLabel, resetCompilation, setEdges],
   );
 
   const handleNodesChange = useCallback(
     (changes: NodeChange<NoteNodeType>[]) => {
       onNodesChange(changes);
-      if (changes.some((change) => change.type === "remove")) {
-        setBrief(null);
-        setCompileState("idle");
+      if (changes.some((change) => change.type === "remove" || change.type === "position")) {
+        resetCompilation();
       }
     },
-    [onNodesChange],
+    [onNodesChange, resetCompilation],
   );
 
   const handleEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
       onEdgesChange(changes);
       if (changes.some((change) => change.type === "remove")) {
-        setBrief(null);
-        setCompileState("idle");
+        resetCompilation();
       }
     },
-    [onEdgesChange],
+    [onEdgesChange, resetCompilation],
   );
 
   function addNote() {
@@ -186,25 +191,29 @@ export function App() {
         data: { text: "", label: null },
       },
     ]);
-    setBrief(null);
-    setCompileState("idle");
+    resetCompilation();
   }
 
   function restoreExample() {
     setNodes(TODO_EXAMPLE_NODES.map((node) => ({ ...node, data: { ...node.data } })));
     setEdges(TODO_EXAMPLE_EDGES.map((edge) => ({ ...edge })));
     setSupplementalText("这个功能要适合两分钟内现场演示。");
-    setBrief(null);
-    setCompileState("idle");
-    setCompileError("");
+    resetCompilation();
   }
 
-  async function handleCompile() {
+  async function handleCompile(compiler: CompilerKind = "ai") {
     setCompileState("compiling");
     setCompileError("");
+    setBrief(null);
+    setCompilerKind(null);
+    setCompilerNotice("");
     try {
-      const result = await compileIntent(toIntentCanvas(nodes, edges, supplementalText));
+      const result = await compileIntent(
+        toIntentCanvas(nodes, edges, supplementalText),
+        compiler,
+      );
       setBrief(result.brief);
+      setCompilerKind(result.compiler);
       setCompilerNotice(result.notice);
       setCompileState("completed");
     } catch (error) {
@@ -293,7 +302,7 @@ export function App() {
             className="compile-button"
             type="button"
             disabled={compileState === "compiling" || connection !== "connected" || isRunning}
-            onClick={() => void handleCompile()}
+            onClick={() => void handleCompile("ai")}
           >
             {compileState === "compiling" ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}
             整理意图
@@ -345,8 +354,7 @@ export function App() {
               placeholder="还有一些不好放进便签的话……"
               onChange={(event) => {
                 setSupplementalText(event.target.value);
-                setBrief(null);
-                setCompileState("idle");
+                resetCompilation();
               }}
             />
           </label>
@@ -371,7 +379,15 @@ export function App() {
           <div className="panel-heading">
             <span>{run ? "Agent 运行轨迹" : "意图理解摘要"}</span>
             <span className={`run-state run-state--${run?.status ?? compileState}`}>
-              {run ? runStatusText : compileState === "completed" ? "本地已整理" : compileState === "failed" ? "失败" : "待整理"}
+              {run
+                ? runStatusText
+                : compileState === "completed"
+                  ? compilerKind === "ai"
+                    ? "AI 已整理"
+                    : "本地降级"
+                  : compileState === "failed"
+                    ? "失败"
+                    : "待整理"}
             </span>
           </div>
           {run ? (
@@ -402,6 +418,16 @@ export function App() {
               <span className="run-empty-icon"><CircleDot size={18} /></span>
               <strong>{compileError || "尚未生成 Intent Brief"}</strong>
               <p>便签可以零散、孤立或互相矛盾。点击“整理意图”查看结构化结果。</p>
+              {compileState === "failed" && (
+                <button
+                  className="fallback-button"
+                  type="button"
+                  disabled={connection !== "connected" || isRunning}
+                  onClick={() => void handleCompile("local")}
+                >
+                  <RotateCcw size={13} />使用本地规则整理
+                </button>
+              )}
               {runError && <p className="inline-error">{runError}</p>}
             </div>
           ) : (

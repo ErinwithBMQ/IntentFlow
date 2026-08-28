@@ -100,11 +100,14 @@ export function getProject(): Promise<ProjectResponse> {
   return requestJson<ProjectResponse>("/api/project");
 }
 
-export async function compileIntent(canvas: IntentCanvas): Promise<IntentCompileResponse> {
+export async function compileIntent(
+  canvas: IntentCanvas,
+  compiler: "ai" | "local" = "ai",
+): Promise<IntentCompileResponse> {
   const response = await fetch("/api/intent/compile", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ canvas }),
+    body: JSON.stringify({ canvas, compiler }),
   });
 
   if (!response.ok) {

@@ -1,12 +1,85 @@
+import json
+from typing import Any
+
+from openai import AsyncOpenAI
+from pydantic import ValidationError
+
 from app.agent.models import IntentBrief, IntentRequirement
 from app.intent.models import CanvasNote, IntentCanvas
 
 
+class IntentCompileError(RuntimeError):
+    """Raised when the model cannot produce a valid, traceable IntentBrief."""
+
+
+class AIIntentCompiler:
+    def __init__(
+        self,
+        model: str,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout_seconds: float = 45.0,
+        client: AsyncOpenAI | None = None,
+    ) -> None:
+        if not model.strip():
+            raise ValueError("model must not be empty")
+        self.model = model
+        self.client = client or AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout_seconds,
+            max_retries=0,
+        )
+
+    async def compile(self, canvas: IntentCanvas) -> IntentBrief:
+        validate_canvas_input(canvas)
+        validation_feedback = ""
+        for attempt in range(2):
+            try:
+                response = await self.client.responses.create(
+                    model=self.model,
+                    instructions=AI_COMPILER_INSTRUCTIONS,
+                    tools=[INTENT_BRIEF_TOOL],
+                    input=[
+                        {
+                            "role": "user",
+                            "content": self._model_input(canvas, validation_feedback),
+                        }
+                    ],
+                )
+            except Exception as error:
+                raise IntentCompileError(f"模型服务调用失败：{error}") from error
+
+            try:
+                brief = _parse_model_brief(response)
+                validate_compiled_brief(canvas, brief)
+                return brief
+            except IntentCompileError as error:
+                if attempt == 1:
+                    raise IntentCompileError(f"模型连续两次返回无效结果：{error}") from error
+                validation_feedback = str(error)
+
+        raise AssertionError("Intent compiler retry loop ended unexpectedly")
+
+    @staticmethod
+    def _model_input(canvas: IntentCanvas, validation_feedback: str) -> str:
+        content = (
+            "Organize this free-form canvas into an IntentBrief.\n"
+            + canvas.model_dump_json(indent=2)
+        )
+        if validation_feedback:
+            content += (
+                "\n\nYour previous result failed validation. Call submit_intent_brief again with "
+                f"a corrected result. Validation error: {validation_feedback}"
+            )
+        return content
+
+
 def compile_canvas(canvas: IntentCanvas) -> IntentBrief:
+    validate_canvas_input(canvas)
     notes = [note for note in canvas.notes if note.text.strip()]
     note_by_id = {note.id: note for note in notes}
-    if not notes and not canvas.supplemental_text.strip():
-        raise ValueError("Canvas needs at least one note or supplemental description")
 
     requirement_notes = [note for note in notes if note.label == "behavior"]
     if not requirement_notes:
@@ -15,6 +88,8 @@ def compile_canvas(canvas: IntentCanvas) -> IntentBrief:
         ]
     if not requirement_notes:
         requirement_notes = [note for note in notes if note.label == "acceptance"]
+    if not requirement_notes and notes:
+        requirement_notes = [notes[0]]
 
     constraints = [note.text.strip() for note in notes if note.label == "constraint"]
     supplemental_text = canvas.supplemental_text.strip()
@@ -36,12 +111,79 @@ def compile_canvas(canvas: IntentCanvas) -> IntentBrief:
     lead_note = next((note for note in notes if note.label == "idea"), None)
     lead_text = lead_note.text.strip() if lead_note else requirements[0].description
 
-    return IntentBrief(
+    brief = IntentBrief(
         title=_shorten(lead_text, 28),
         goal=lead_text,
         requirements=requirements,
         constraints=constraints,
     )
+    validate_compiled_brief(canvas, brief)
+    return brief
+
+
+def validate_compiled_brief(canvas: IntentCanvas, brief: IntentBrief) -> None:
+    if not brief.title.strip() or not brief.goal.strip():
+        raise IntentCompileError("IntentBrief 的标题和目标不能为空")
+    if not brief.requirements:
+        raise IntentCompileError("IntentBrief 至少需要一项需求")
+
+    expected_ids = [f"REQ-{index:02d}" for index in range(1, len(brief.requirements) + 1)]
+    requirement_ids = [requirement.id for requirement in brief.requirements]
+    if requirement_ids != expected_ids:
+        raise IntentCompileError("需求 ID 必须从 REQ-01 开始连续编号且不能重复")
+
+    source_note_ids = {
+        note.id for note in canvas.notes if note.text.strip()
+    }
+    for requirement in brief.requirements:
+        if not requirement.description.strip():
+            raise IntentCompileError(f"{requirement.id} 的描述不能为空")
+        if not requirement.acceptance_criteria or any(
+            not criterion.strip() for criterion in requirement.acceptance_criteria
+        ):
+            raise IntentCompileError(f"{requirement.id} 至少需要一条非空验收标准")
+        if len(requirement.source_ids) != len(set(requirement.source_ids)):
+            raise IntentCompileError(f"{requirement.id} 包含重复的来源便签 ID")
+        unknown_ids = set(requirement.source_ids) - source_note_ids
+        if unknown_ids:
+            unknown = "、".join(sorted(unknown_ids))
+            raise IntentCompileError(f"{requirement.id} 引用了不存在的来源便签：{unknown}")
+        if source_note_ids and not requirement.source_ids:
+            raise IntentCompileError(f"{requirement.id} 缺少来源便签 ID")
+
+    if any(not constraint.strip() for constraint in brief.constraints):
+        raise IntentCompileError("约束内容不能为空")
+
+
+def _parse_model_brief(response: Any) -> IntentBrief:
+    function_call = next(
+        (
+            item
+            for item in response.output
+            if item.type == "function_call" and item.name == "submit_intent_brief"
+        ),
+        None,
+    )
+    if function_call is None:
+        raise IntentCompileError("模型没有提交结构化 IntentBrief")
+
+    try:
+        payload = json.loads(function_call.arguments)
+        brief = IntentBrief.model_validate(payload)
+    except (json.JSONDecodeError, TypeError, ValidationError) as error:
+        raise IntentCompileError(f"模型返回的 IntentBrief 无法通过结构校验：{error}") from error
+    return brief
+
+
+def validate_canvas_input(canvas: IntentCanvas) -> None:
+    notes = [note for note in canvas.notes if note.text.strip()]
+    if not notes and not canvas.supplemental_text.strip():
+        raise ValueError("Canvas needs at least one note or supplemental description")
+    note_ids = [note.id for note in notes]
+    if any(not note_id.strip() for note_id in note_ids):
+        raise ValueError("Non-blank canvas notes must have a non-empty ID")
+    if len(note_ids) != len(set(note_ids)):
+        raise ValueError("Non-blank canvas note IDs must be unique")
 
 
 def _compile_requirement(
@@ -84,3 +226,64 @@ def _shorten(text: str, max_length: int) -> str:
 
 def _unique(values: list[str]) -> list[str]:
     return list(dict.fromkeys(values))
+
+
+AI_COMPILER_INSTRUCTIONS = """You are the intent compiler inside IntentFlow.
+Convert the user's free-form notes, connections, labels, positions, and supplemental text into
+one structured IntentBrief by calling submit_intent_brief exactly once.
+
+Rules:
+- Labels, connections, and spatial positions are hints, not mandatory structure.
+- Ignore blank notes. Preserve meaningful isolated notes and supplemental text.
+- Do not silently resolve contradictions. Keep conflicting expectations visible in requirements,
+  acceptance criteria, or constraints.
+- Do not invent product behavior or source IDs.
+- Number requirements consecutively as REQ-01, REQ-02, and so on.
+- Every requirement needs at least one observable acceptance criterion.
+- source_ids may only contain IDs copied exactly from non-blank input notes. If notes exist, every
+  requirement must reference at least one note. For supplemental-text-only input, use an empty list.
+- Return concise user-facing Chinese text when the input is Chinese.
+"""
+
+
+INTENT_BRIEF_TOOL: dict[str, object] = {
+    "type": "function",
+    "name": "submit_intent_brief",
+    "description": "Submit the structured and source-traceable IntentBrief.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "goal": {"type": "string"},
+            "requirements": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "pattern": r"^REQ-\d{2}$"},
+                        "description": {"type": "string"},
+                        "acceptance_criteria": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "source_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": [
+                        "id",
+                        "description",
+                        "acceptance_criteria",
+                        "source_ids",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
+            "constraints": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["title", "goal", "requirements", "constraints"],
+        "additionalProperties": False,
+    },
+    "strict": False,
+}

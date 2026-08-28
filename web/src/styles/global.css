@@ -71,6 +71,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .run-empty-icon { width: 40px; height: 40px; margin: 0 auto 14px; display: grid; place-items: center; border: 1px solid #d9d8d2; border-radius: 50%; color: #8b908c; }
 .run-empty strong { font-size: 12px; font-weight: 600; }
 .run-empty p { max-width: 235px; margin: 8px auto 0; color: #8b908c; font-size: 11px; line-height: 1.65; }
+.fallback-button { height: 32px; margin: 14px auto 0; padding: 0 10px; display: flex; align-items: center; gap: 6px; border: 1px solid #d4a29d; border-radius: 4px; color: #963d34; background: #fff4f2; font-size: 11px; font-weight: 600; cursor: pointer; }
+.fallback-button:disabled { cursor: not-allowed; opacity: 0.45; }
 .brief-content { padding: 18px 14px 28px; }
 .eyebrow { color: #3b6cff; font: 600 10px "Cascadia Code", monospace; letter-spacing: 0.12em; }
 .brief-content h2 { margin: 8px 0 6px; font-size: 17px; line-height: 1.4; }
