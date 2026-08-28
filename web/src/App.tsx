@@ -14,17 +14,13 @@ import {
   ArrowRight,
   Check,
   CircleDot,
-  FileCode2,
   Link2,
   LoaderCircle,
-  LocateFixed,
   Play,
   Plus,
   RotateCcw,
   Sparkles,
   Square,
-  TerminalSquare,
-  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -36,6 +32,7 @@ import {
   type NoteNode as NoteNodeType,
 } from "./features/canvas/canvasState";
 import { NoteNode, NoteNodeProvider } from "./features/canvas/NoteNode";
+import { SingleRunConversation } from "./features/run/SingleRunConversation";
 import {
   compileIntent,
   createRun,
@@ -47,7 +44,6 @@ import {
   type CanvasNoteLabel,
   type IntentBrief,
   type ProjectResponse,
-  type RunEvent,
   type RunSnapshot,
 } from "./services/api";
 
@@ -87,6 +83,7 @@ export function App() {
   const [compileState, setCompileState] = useState<CompileState>("idle");
   const [compileError, setCompileError] = useState("");
   const [run, setRun] = useState<RunSnapshot | null>(null);
+  const [runBrief, setRunBrief] = useState<IntentBrief | null>(null);
   const [runError, setRunError] = useState("");
   const closeRunStream = useRef<(() => void) | null>(null);
 
@@ -203,6 +200,9 @@ export function App() {
   }
 
   async function handleCompile(compiler: CompilerKind = "ai") {
+    setRun(null);
+    setRunBrief(null);
+    setRunError("");
     setCompileState("compiling");
     setCompileError("");
     setBrief(null);
@@ -238,6 +238,7 @@ export function App() {
     try {
       const created = await createRun(brief);
       setRun(created);
+      setRunBrief(brief);
       closeRunStream.current = subscribeToRun(
         created.id,
         (event) => {
@@ -378,7 +379,7 @@ export function App() {
 
         <aside className="run-panel intent-panel">
           <div className="panel-heading">
-            <span>{run ? "Agent 运行轨迹" : "意图理解摘要"}</span>
+            <span>{run ? "单轮协作记录" : "意图理解摘要"}</span>
             <span className={`run-state run-state--${run?.status ?? compileState}`}>
               {run
                 ? runStatusText
@@ -392,71 +393,14 @@ export function App() {
             </span>
           </div>
           {run ? (
-            <div className="timeline-content">
-              <div className="run-summary">
-                <span className="eyebrow">RUN {run.id}</span>
-                <strong>{brief?.title}</strong>
-                <small><FileCode2 size={12} /> {run.workspace_relative_path}</small>
-              </div>
-              {runError && <p className="run-error"><X size={13} />{runError}</p>}
-              <div className="timeline">
-                {run.events.length === 0 && (
-                  <div className="timeline-waiting"><LoaderCircle className="spin" size={15} />正在等待第一个动作…</div>
-                )}
-                {run.events.map((event) => <RunEventItem event={event} key={event.sequence} />)}
-              </div>
-              {run.report && (
-                <>
-                  <div className="requirement-results">
-                    <span className="requirement-results__title">需求结果</span>
-                    {run.report.requirement_results.map((result) => {
-                      const sourceIds = brief?.requirements.find(
-                        (requirement) => requirement.id === result.requirement_id,
-                      )?.source_ids ?? [];
-                      return (
-                        <article className="requirement-result" key={result.requirement_id}>
-                          <div className="requirement-result__heading">
-                            <span>{result.requirement_id}</span>
-                            <span className={`requirement-status requirement-status--${result.status}`}>
-                              {requirementStatusText[result.status]}
-                            </span>
-                            <button
-                              type="button"
-                              title="定位来源便签"
-                              aria-label={`定位 ${result.requirement_id} 的来源便签`}
-                              disabled={sourceIds.length === 0}
-                              onClick={() => highlightSources(sourceIds)}
-                            >
-                              <LocateFixed size={13} />
-                            </button>
-                          </div>
-                          <p>{result.summary}</p>
-                          {(result.related_files.length > 0 || result.evidence.length > 0) && (
-                            <details>
-                              <summary>
-                                {result.related_files.length} 个文件 · {result.evidence.length} 条证据
-                              </summary>
-                              {result.related_files.map((file) => (
-                                <code key={file}><FileCode2 size={11} />{file}</code>
-                              ))}
-                              {result.evidence.map((item) => (
-                                <small key={item}><Check size={11} />{item}</small>
-                              ))}
-                            </details>
-                          )}
-                        </article>
-                      );
-                    })}
-                  </div>
-                  <div className={`final-report final-report--${run.status}`}>
-                    <span>最终报告</span>
-                    <strong>{run.report.summary}</strong>
-                    {run.report.evidence.map((item) => <small key={item}><Check size={12} />{item}</small>)}
-                    {run.report.unresolved.map((item) => <small key={item}><X size={12} />{item}</small>)}
-                  </div>
-                </>
-              )}
-            </div>
+            runBrief && (
+              <SingleRunConversation
+                brief={runBrief}
+                run={run}
+                runError={runError}
+                onHighlightSources={highlightSources}
+              />
+            )
           ) : !brief ? (
             <div className="run-empty">
               <span className="run-empty-icon"><CircleDot size={18} /></span>
@@ -511,41 +455,5 @@ export function App() {
         <span className="statusbar-spacer" /><span>v0.3.0 · agent runtime</span>
       </footer>
     </main>
-  );
-}
-
-const requirementStatusText = {
-  verified: "已验证",
-  implemented: "已实现",
-  failed: "失败",
-  unresolved: "未解决",
-} as const;
-
-function RunEventItem({ event }: { event: RunEvent }) {
-  const isCommand = event.tool_name === "run_command";
-  return (
-    <article className={`timeline-event timeline-event--${event.status}`}>
-      <div className="timeline-event__marker">
-        {event.status === "running" ? (
-          <LoaderCircle className="spin" size={13} />
-        ) : event.status === "succeeded" ? (
-          <Check size={13} />
-        ) : (
-          <X size={13} />
-        )}
-      </div>
-      <div className="timeline-event__body">
-        <span className="timeline-event__meta">#{event.sequence.toString().padStart(2, "0")} · {event.phase}</span>
-        <strong>{event.action}</strong>
-        <p>{event.reason}</p>
-        {(event.tool_name || event.target) && (
-          <code>{isCommand ? <TerminalSquare size={11} /> : <FileCode2 size={11} />}{event.tool_name}{event.target ? ` · ${event.target}` : ""}</code>
-        )}
-        {event.related_requirement_ids.length > 0 && (
-          <small>关联 {event.related_requirement_ids.join("、")}</small>
-        )}
-        {event.evidence.map((item) => <small className="event-evidence" key={item}><Check size={10} />{item}</small>)}
-      </div>
-    </article>
   );
 }
