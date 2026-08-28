@@ -6,7 +6,7 @@ from httpx import ASGITransport, AsyncClient
 
 import app.main as main_module
 from app.agent.model_client import FakeModelClient
-from app.agent.models import ModelTurn, ToolCall
+from app.agent.models import IntentBrief, IntentRequirement, ModelTurn, ToolCall
 from app.runs import RunManager
 
 
@@ -167,6 +167,13 @@ async def test_run_api_copies_demo_and_streams_events(tmp_path, monkeypatch) -> 
         assert created.status_code == 201
         run_id = created.json()["id"]
         workspace = tmp_path / created.json()["workspace_relative_path"]
+        record = manager.get(run_id)
+        assert record is not None
+        assert record.baseline != record.workspace
+        assert record.baseline.relative_to(tmp_path).as_posix() == (
+            f"runtime-data/runs/{run_id}/baseline/todo-demo"
+        )
+        assert (record.baseline / "source.txt").read_text(encoding="utf-8") == "original"
         assert (workspace / "source.txt").read_text(encoding="utf-8") == "original"
         assert (tmp_path / "examples" / "todo-demo" / "source.txt").read_text() == "original"
 
@@ -191,6 +198,39 @@ async def test_run_api_rejects_unknown_run() -> None:
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.get("/api/runs/missing")
     assert response.status_code == 404
+
+
+async def test_run_baseline_stays_frozen_when_the_project_changes(tmp_path) -> None:
+    make_repository(tmp_path)
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=fake_model_factory,
+        command_factory=command_factory,
+    )
+    snapshot = manager.start(
+        IntentBrief(
+            title="固定 Diff 基准",
+            goal="确认运行后的项目变化不会影响本次基准",
+            requirements=[
+                IntentRequirement(
+                    id="REQ-1",
+                    description="保留运行开始时的代码",
+                    acceptance_criteria=["基准内容保持不变"],
+                    source_ids=["note-1"],
+                )
+            ],
+        )
+    )
+    record = manager.get(snapshot.id)
+    assert record is not None
+
+    project_file = tmp_path / "examples" / "todo-demo" / "source.txt"
+    project_file.write_text("changed later", encoding="utf-8")
+    await wait_until_finished(manager, snapshot.id)
+
+    assert project_file.read_text(encoding="utf-8") == "changed later"
+    assert (record.baseline / "source.txt").read_text(encoding="utf-8") == "original"
+    assert (record.workspace / "source.txt").read_text(encoding="utf-8") == "original"
 
 
 async def test_run_api_allows_a_ninth_turn_for_the_final_report(

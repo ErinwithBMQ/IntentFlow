@@ -15,7 +15,15 @@ from app.intent import (
     compile_canvas,
     validate_canvas_input,
 )
-from app.runs import RunManager, RunSnapshot
+from app.runs import RunManager, RunRecord, RunSnapshot
+from app.workspaces import (
+    ChangeSummary,
+    FileDiff,
+    WorkspaceAccessError,
+    WorkspaceFile,
+    WorkspaceService,
+    WorkspaceTree,
+)
 
 
 class HealthResponse(BaseModel):
@@ -37,6 +45,7 @@ app = FastAPI(
 )
 repository_root = Path(__file__).resolve().parents[2]
 run_manager = RunManager(repository_root)
+workspace_service = WorkspaceService()
 
 
 class CreateRunRequest(BaseModel):
@@ -56,6 +65,22 @@ async def get_project() -> ProjectResponse:
         relativePath="examples/todo-demo",
         ready=project_path.is_dir(),
     )
+
+
+@app.get("/api/project/tree", response_model=WorkspaceTree)
+async def get_project_tree() -> WorkspaceTree:
+    try:
+        return workspace_service.tree(project_root(), "todo-demo")
+    except WorkspaceAccessError as error:
+        raise workspace_http_error(error) from error
+
+
+@app.get("/api/project/file", response_model=WorkspaceFile)
+async def get_project_file(path: str) -> WorkspaceFile:
+    try:
+        return workspace_service.read_text(project_root(), path)
+    except WorkspaceAccessError as error:
+        raise workspace_http_error(error) from error
 
 
 @app.post("/api/intent/compile", response_model=CanvasCompileResponse)
@@ -123,6 +148,42 @@ async def get_run(run_id: str) -> RunSnapshot:
     return record.snapshot()
 
 
+@app.get("/api/runs/{run_id}/tree", response_model=WorkspaceTree)
+async def get_run_tree(run_id: str) -> WorkspaceTree:
+    record = require_run(run_id)
+    try:
+        return workspace_service.tree(record.workspace, "todo-demo")
+    except WorkspaceAccessError as error:
+        raise workspace_http_error(error) from error
+
+
+@app.get("/api/runs/{run_id}/file", response_model=WorkspaceFile)
+async def get_run_file(run_id: str, path: str) -> WorkspaceFile:
+    record = require_run(run_id)
+    try:
+        return workspace_service.read_text(record.workspace, path)
+    except WorkspaceAccessError as error:
+        raise workspace_http_error(error) from error
+
+
+@app.get("/api/runs/{run_id}/changes", response_model=ChangeSummary)
+async def get_run_changes(run_id: str) -> ChangeSummary:
+    record = require_finished_run(run_id)
+    try:
+        return workspace_service.changes(record.baseline, record.workspace)
+    except WorkspaceAccessError as error:
+        raise workspace_http_error(error) from error
+
+
+@app.get("/api/runs/{run_id}/diff", response_model=FileDiff)
+async def get_run_file_diff(run_id: str, path: str) -> FileDiff:
+    record = require_finished_run(run_id)
+    try:
+        return workspace_service.file_diff(record.baseline, record.workspace, path)
+    except WorkspaceAccessError as error:
+        raise workspace_http_error(error) from error
+
+
 @app.get("/api/runs/{run_id}/events")
 async def get_run_events(run_id: str) -> StreamingResponse:
     if run_manager.get(run_id) is None:
@@ -140,3 +201,34 @@ async def stop_run(run_id: str) -> RunSnapshot:
         return await run_manager.stop(run_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="运行记录不存在") from error
+
+
+def project_root() -> Path:
+    return repository_root / "examples" / "todo-demo"
+
+
+def require_run(run_id: str) -> RunRecord:
+    record = run_manager.get(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    return record
+
+
+def require_finished_run(run_id: str) -> RunRecord:
+    record = require_run(run_id)
+    if record.status == "running":
+        raise HTTPException(status_code=409, detail="运行结束后才能生成正式 Diff")
+    return record
+
+
+def workspace_http_error(error: WorkspaceAccessError) -> HTTPException:
+    status_code = {
+        "invalid_path": 400,
+        "not_file": 400,
+        "not_found": 404,
+        "too_large": 413,
+        "too_many_files": 413,
+        "binary": 415,
+        "invalid_utf8": 415,
+    }[error.kind]
+    return HTTPException(status_code=status_code, detail=str(error))

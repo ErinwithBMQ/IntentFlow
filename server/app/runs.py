@@ -13,6 +13,7 @@ from app.agent.model_client import ModelClient, OpenAIResponsesModelClient
 from app.agent.models import IntentBrief, RunEvent, RunReport, RunResult
 from app.agent.runner import DEFAULT_MAX_STEPS, AgentRunner
 from app.agent.tools import ToolContext, ToolRegistry
+from app.workspaces import DEFAULT_IGNORED_NAMES
 
 
 class RunSnapshot(BaseModel):
@@ -24,9 +25,16 @@ class RunSnapshot(BaseModel):
 
 
 class RunRecord:
-    def __init__(self, run_id: str, workspace: Path, relative_path: str) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        workspace: Path,
+        baseline: Path,
+        relative_path: str,
+    ) -> None:
         self.id = run_id
         self.workspace = workspace
+        self.baseline = baseline
         self.relative_path = relative_path
         self.status: Literal["running", "completed", "failed", "stopped"] = "running"
         self.events: list[RunEvent] = []
@@ -97,14 +105,21 @@ class RunManager:
         run_id = uuid4().hex[:12]
         relative_path = f"runtime-data/runs/{run_id}/todo-demo"
         workspace = self.repository_root / Path(relative_path)
-        workspace.parent.mkdir(parents=True, exist_ok=False)
-        shutil.copytree(
-            self.repository_root / "examples" / "todo-demo",
-            workspace,
-            ignore=shutil.ignore_patterns("node_modules", "dist"),
-        )
+        run_root = workspace.parent
+        baseline = run_root / "baseline" / "todo-demo"
+        run_root.mkdir(parents=True, exist_ok=False)
+        try:
+            shutil.copytree(
+                self.repository_root / "examples" / "todo-demo",
+                baseline,
+                ignore=shutil.ignore_patterns(*DEFAULT_IGNORED_NAMES),
+            )
+            shutil.copytree(baseline, workspace)
+        except Exception:
+            shutil.rmtree(run_root, ignore_errors=True)
+            raise
 
-        record = RunRecord(run_id, workspace, relative_path)
+        record = RunRecord(run_id, workspace, baseline, relative_path)
         self.records[run_id] = record
         registry = ToolRegistry()
         model_client = (
