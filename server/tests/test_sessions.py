@@ -1,0 +1,527 @@
+import asyncio
+import sys
+from pathlib import Path
+
+from httpx import ASGITransport, AsyncClient
+
+import app.main as main_module
+from app.agent.model_client import FakeModelClient
+from app.agent.models import IntentBrief, IntentRequirement, ModelTurn, ToolCall
+from app.conversation_service import build_project_context
+from app.intent.compiler import IntentRequestDecision
+from app.intent.models import CanvasNote, CanvasPosition, IntentCanvas
+from app.runs import RunManager, RunSnapshot
+from app.sessions import ProjectRecord, SessionStore
+
+
+def make_store(path: Path) -> SessionStore:
+    store = SessionStore(path)
+    store.ensure_project(
+        ProjectRecord(
+            id="todo-demo",
+            name="todo-demo",
+            relative_path="examples/todo-demo",
+        )
+    )
+    return store
+
+
+def sample_brief() -> IntentBrief:
+    return IntentBrief(
+        title="增加筛选",
+        goal="允许筛选未完成任务",
+        requirements=[
+            IntentRequirement(
+                id="REQ-01",
+                description="显示未完成任务",
+                acceptance_criteria=["筛选结果正确"],
+                source_ids=["message-1"],
+            )
+        ],
+    )
+
+
+def test_session_store_restores_messages_canvas_and_runs(tmp_path) -> None:
+    database = tmp_path / "intentflow.db"
+    store = make_store(database)
+    session = store.create_session("todo-demo")
+    canvas = IntentCanvas(
+        notes=[
+            CanvasNote(
+                id="note-1",
+                text="保留筛选按钮",
+                position=CanvasPosition(x=12, y=24),
+            )
+        ]
+    )
+    canvas_snapshot = store.add_canvas_snapshot(session.id, canvas)
+    message = store.add_message(
+        session.id,
+        "user",
+        "agent",
+        "增加未完成筛选",
+        canvas_snapshot_id=canvas_snapshot.id,
+    )
+    run = RunSnapshot(
+        id="run-1",
+        status="completed",
+        review_status="pending",
+        workspace_relative_path="runtime-data/runs/run-1/todo-demo",
+        session_id=session.id,
+        trigger_message_id=message.id,
+        intent=sample_brief(),
+        events=[],
+    )
+    store.save_run(run)
+    store.attach_run(message.id, run.id)
+
+    canvas.notes[0].text = "外部修改不会改变快照"
+    restored = make_store(database).get_detail(session.id)
+
+    assert restored is not None
+    assert restored.session.title == "增加未完成筛选"
+    assert restored.messages[0].id == message.id
+    assert restored.messages[0].run_id == run.id
+    assert restored.canvas_snapshots[0].canvas.notes[0].text == "保留筛选按钮"
+    assert restored.runs[0].intent == sample_brief()
+
+
+def test_restored_running_run_is_marked_stopped(tmp_path) -> None:
+    store = make_store(tmp_path / "intentflow.db")
+    session = store.create_session("todo-demo")
+    snapshot = RunSnapshot(
+        id="run-interrupted",
+        status="running",
+        review_status="pending",
+        workspace_relative_path="runtime-data/runs/run-interrupted/todo-demo",
+        session_id=session.id,
+        intent=sample_brief(),
+        events=[],
+    )
+    store.save_run(snapshot)
+    manager = RunManager(tmp_path, snapshot_sink=store.save_run)
+
+    restored = manager.restore(store.load_runs()[0])
+    persisted = make_store(tmp_path / "intentflow.db").load_runs()[0]
+
+    assert restored.status == "stopped"
+    assert restored.events[-1].action == "服务重启，先前运行已停止"
+    assert persisted.status == "stopped"
+
+
+async def test_delete_session_removes_history_and_run_workspace(tmp_path, monkeypatch) -> None:
+    store = make_store(tmp_path / "intentflow.db")
+    session = store.create_session("todo-demo")
+    store.add_message(session.id, "user", "ask", "介绍一下项目")
+    store.add_canvas_snapshot(
+        session.id,
+        IntentCanvas(
+            notes=[
+                CanvasNote(
+                    id="note-1",
+                    text="说明",
+                    position=CanvasPosition(x=0, y=0),
+                )
+            ]
+        ),
+    )
+    run_root = tmp_path / "runtime-data" / "runs" / "run-delete"
+    workspace = run_root / "todo-demo"
+    workspace.mkdir(parents=True)
+    (workspace / "result.txt").write_text("temporary", encoding="utf-8")
+    snapshot = RunSnapshot(
+        id="run-delete",
+        status="completed",
+        review_status="discarded",
+        workspace_relative_path="runtime-data/runs/run-delete/todo-demo",
+        session_id=session.id,
+        intent=sample_brief(),
+        events=[],
+    )
+    store.save_run(snapshot)
+    manager = RunManager(tmp_path, snapshot_sink=store.save_run)
+    manager.restore(snapshot)
+    monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.delete(f"/api/sessions/{session.id}")
+
+    assert response.status_code == 204
+    assert store.get_detail(session.id) is None
+    assert store.load_runs() == []
+    assert manager.get(snapshot.id) is None
+    assert not run_root.exists()
+
+
+async def test_delete_session_rejects_running_agent(tmp_path, monkeypatch) -> None:
+    store = make_store(tmp_path / "intentflow.db")
+    session = store.create_session("todo-demo")
+    store.save_run(
+        RunSnapshot(
+            id="run-active",
+            status="running",
+            review_status="pending",
+            workspace_relative_path="runtime-data/runs/run-active/todo-demo",
+            session_id=session.id,
+            intent=sample_brief(),
+            events=[],
+        )
+    )
+    monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(main_module, "run_manager", RunManager(tmp_path))
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.delete(f"/api/sessions/{session.id}")
+
+    assert response.status_code == 409
+    assert store.get_detail(session.id) is not None
+
+
+class StubResponder:
+    async def answer(self, messages, canvas, project_context) -> str:
+        assert messages[-1].content == "这个项目能做什么？"
+        assert canvas is not None
+        assert "Project:" in project_context
+        return "这是一个可验证的 Todo Agent 示例。"
+
+
+async def test_session_api_creates_and_restores_ask_messages(tmp_path, monkeypatch) -> None:
+    store = make_store(tmp_path / "intentflow.db")
+    monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(main_module, "create_conversation_responder", lambda: StubResponder())
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        created = await client.post("/api/sessions", json={"title": "新对话"})
+        session_id = created.json()["id"]
+        sent = await client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={
+                "content": "这个项目能做什么？",
+                "mode": "ask",
+                "attach_canvas": True,
+                "canvas": {
+                    "notes": [
+                        {
+                            "id": "note-1",
+                            "text": "Todo 项目",
+                            "label": None,
+                            "position": {"x": 0, "y": 0},
+                        }
+                    ],
+                    "connections": [],
+                    "supplemental_text": "",
+                },
+            },
+        )
+        restored = await client.get(f"/api/sessions/{session_id}")
+
+    assert created.status_code == 201
+    assert sent.status_code == 201
+    assert sent.json()["run"] is None
+    assert sent.json()["assistant_message"]["content"] == "这是一个可验证的 Todo Agent 示例。"
+    assert len(restored.json()["messages"]) == 2
+    assert len(restored.json()["canvas_snapshots"]) == 1
+
+
+class StubCompiler:
+    def __init__(self, expected_text: str = "先规划筛选功能") -> None:
+        self.expected_text = expected_text
+
+    async def compile(
+        self,
+        canvas: IntentCanvas,
+        *,
+        project_context: str = "",
+    ) -> IntentBrief:
+        assert any(note.text == self.expected_text for note in canvas.notes)
+        assert project_context
+        return sample_brief()
+
+    async def compile_agent_request(
+        self,
+        canvas: IntentCanvas,
+        primary_source_id: str,
+        *,
+        project_context: str = "",
+    ) -> IntentRequestDecision:
+        assert any(
+            note.id == primary_source_id and note.text == self.expected_text
+            for note in canvas.notes
+        )
+        assert project_context
+        return IntentRequestDecision(brief=sample_brief())
+
+    async def compile_plan_request(
+        self,
+        canvas: IntentCanvas,
+        primary_source_id: str,
+        *,
+        project_context: str = "",
+    ) -> IntentRequestDecision:
+        assert any(
+            note.id == primary_source_id and note.text == self.expected_text
+            for note in canvas.notes
+        )
+        assert project_context
+        return IntentRequestDecision(brief=sample_brief())
+
+
+class GreetingCompiler:
+    async def compile_agent_request(
+        self,
+        canvas: IntentCanvas,
+        primary_source_id: str,
+        *,
+        project_context: str = "",
+    ) -> IntentRequestDecision:
+        assert any(
+            note.id == primary_source_id and note.text == "你好"
+            for note in canvas.notes
+        )
+        assert any(note.text == "增加筛选功能" for note in canvas.notes)
+        assert project_context
+        return IntentRequestDecision(response="你好，请告诉我希望修改或验证的具体内容。")
+
+
+class ProjectQuestionCompiler:
+    async def compile_plan_request(
+        self,
+        canvas: IntentCanvas,
+        primary_source_id: str,
+        *,
+        project_context: str = "",
+    ) -> IntentRequestDecision:
+        assert any(
+            note.id == primary_source_id and note.text == "我们这是一个什么项目"
+            for note in canvas.notes
+        )
+        assert "Project:" in project_context
+        return IntentRequestDecision(response="这是 IntentFlow 使用的 Todo 演示项目。")
+
+
+def test_project_context_contains_source_and_ignores_dependencies(tmp_path) -> None:
+    project = tmp_path / "todo-demo"
+    (project / "src").mkdir(parents=True)
+    (project / "node_modules" / "package").mkdir(parents=True)
+    (project / "src" / "main.js").write_text("export const ready = true;", encoding="utf-8")
+    (project / "package.json").write_text('{"name":"todo-demo"}', encoding="utf-8")
+    (project / "package-lock.json").write_text("ignored", encoding="utf-8")
+    (project / "node_modules" / "package" / "index.js").write_text(
+        "ignored",
+        encoding="utf-8",
+    )
+
+    context = build_project_context(project)
+
+    assert "src/main.js" in context
+    assert "export const ready = true;" in context
+    assert "package.json" in context
+    assert "package-lock.json" not in context
+    assert "node_modules" not in context
+
+
+async def test_plan_message_returns_structured_intent_without_a_run(tmp_path, monkeypatch) -> None:
+    store = make_store(tmp_path / "intentflow.db")
+    monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(main_module, "create_ai_intent_compiler", lambda: StubCompiler())
+    session = store.create_session("todo-demo")
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "先规划筛选功能", "mode": "plan"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 201
+    assert payload["run"] is None
+    assert payload["assistant_message"]["intent"]["title"] == "增加筛选"
+    assert payload["assistant_message"]["content"] == "我根据当前项目整理了《增加筛选》计划。"
+
+
+async def test_plan_question_returns_direct_answer_without_intent(tmp_path, monkeypatch) -> None:
+    store = make_store(tmp_path / "intentflow.db")
+    monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(
+        main_module,
+        "create_ai_intent_compiler",
+        lambda: ProjectQuestionCompiler(),
+    )
+    session = store.create_session("todo-demo")
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "我们这是一个什么项目", "mode": "plan"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 201
+    assert payload["run"] is None
+    assert payload["assistant_message"]["intent"] is None
+    assert payload["assistant_message"]["content"] == "这是 IntentFlow 使用的 Todo 演示项目。"
+
+
+async def test_agent_message_requires_previous_run_review(tmp_path, monkeypatch) -> None:
+    store = make_store(tmp_path / "intentflow.db")
+    session = store.create_session("todo-demo")
+    pending_run = RunSnapshot(
+        id="run-pending-review",
+        status="completed",
+        review_status="pending",
+        workspace_relative_path="runtime-data/runs/run-pending-review/todo-demo",
+        session_id=session.id,
+        intent=sample_brief(),
+        events=[],
+    )
+    store.save_run(pending_run)
+    monkeypatch.setattr(main_module, "session_store", store)
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "继续修改上一轮结果", "mode": "agent"},
+        )
+
+    restored = store.get_detail(session.id)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "请先应用或放弃上一轮 Agent 修改，再开始下一轮"
+    assert restored is not None
+    assert restored.messages == []
+
+    store.save_run(pending_run.model_copy(update={"review_status": "accepted"}))
+    assert store.get_pending_review_run(session.id) is None
+
+
+async def test_agent_greeting_with_canvas_replies_without_starting_run(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = make_store(tmp_path / "intentflow.db")
+    session = store.create_session("todo-demo")
+    monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(main_module, "create_ai_intent_compiler", lambda: GreetingCompiler())
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={
+                "content": "你好",
+                "mode": "agent",
+                "attach_canvas": True,
+                "canvas": {
+                    "notes": [
+                        {
+                            "id": "canvas-task",
+                            "text": "增加筛选功能",
+                            "label": "behavior",
+                            "position": {"x": 0, "y": 0},
+                        }
+                    ],
+                    "connections": [],
+                    "supplemental_text": "",
+                },
+            },
+        )
+
+    payload = response.json()
+    assert response.status_code == 201
+    assert payload["run"] is None
+    assert payload["assistant_message"]["content"] == "你好，请告诉我希望修改或验证的具体内容。"
+    assert store.get_detail(session.id).runs == []
+
+
+def agent_model_factory(_registry):
+    return FakeModelClient(
+        [
+            ModelTurn(
+                action="运行测试",
+                reason="获取验证证据",
+                related_requirement_ids=["REQ-01"],
+                tool_calls=[
+                    ToolCall(
+                        id="test",
+                        name="run_command",
+                        arguments={"command": "test"},
+                        related_requirement_ids=["REQ-01"],
+                    )
+                ],
+            ),
+            ModelTurn(
+                action="报告结果",
+                reason="测试已通过",
+                related_requirement_ids=["REQ-01"],
+                tool_calls=[
+                    ToolCall(
+                        id="report",
+                        name="report_result",
+                        arguments={
+                            "status": "completed",
+                            "summary": "筛选计划已验证",
+                            "evidence": ["test passed"],
+                            "requirements": [
+                                {
+                                    "requirement_id": "REQ-01",
+                                    "status": "verified",
+                                    "summary": "测试通过",
+                                }
+                            ],
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+
+async def test_agent_message_links_and_persists_its_run(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "examples" / "todo-demo"
+    project.mkdir(parents=True)
+    (project / "source.txt").write_text("ready", encoding="utf-8")
+    store = make_store(tmp_path / "intentflow.db")
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=agent_model_factory,
+        command_factory=lambda _workspace: {
+            "test": (sys.executable, "-c", "print('ok')"),
+        },
+        snapshot_sink=store.save_run,
+    )
+    monkeypatch.setattr(main_module, "repository_root", tmp_path)
+    monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(
+        main_module,
+        "create_ai_intent_compiler",
+        lambda: StubCompiler("实现筛选功能"),
+    )
+    session = store.create_session("todo-demo")
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "实现筛选功能", "mode": "agent"},
+        )
+        run_id = response.json()["run"]["id"]
+        for _ in range(100):
+            if manager.get(run_id).status != "running":
+                break
+            await asyncio.sleep(0.01)
+
+    restored = make_store(tmp_path / "intentflow.db").get_detail(session.id)
+
+    assert response.status_code == 201
+    assert response.json()["user_message"]["run_id"] == run_id
+    assert restored is not None
+    assert [message.run_id for message in restored.messages] == [run_id, run_id]
+    assert restored.runs[0].status == "completed"
+    assert restored.runs[0].trigger_message_id == restored.messages[0].id

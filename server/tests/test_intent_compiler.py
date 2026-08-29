@@ -12,8 +12,13 @@ from app.main import app
 
 
 class FakeResponsesAPI:
-    def __init__(self, arguments: dict[str, object] | list[dict[str, object] | str]) -> None:
+    def __init__(
+        self,
+        arguments: dict[str, object] | list[dict[str, object] | str],
+        tool_name: str = "submit_intent_brief",
+    ) -> None:
         self.arguments = arguments if isinstance(arguments, list) else [arguments]
+        self.tool_name = tool_name
         self.requests: list[dict[str, object]] = []
 
     async def create(self, **request: object) -> object:
@@ -23,7 +28,7 @@ class FakeResponsesAPI:
             output=[
                 SimpleNamespace(
                     type="function_call",
-                    name="submit_intent_brief",
+                    name=self.tool_name,
                     arguments=(
                         arguments
                         if isinstance(arguments, str)
@@ -35,8 +40,12 @@ class FakeResponsesAPI:
 
 
 class FakeOpenAIClient:
-    def __init__(self, arguments: dict[str, object] | list[dict[str, object] | str]) -> None:
-        self.responses = FakeResponsesAPI(arguments)
+    def __init__(
+        self,
+        arguments: dict[str, object] | list[dict[str, object] | str],
+        tool_name: str = "submit_intent_brief",
+    ) -> None:
+        self.responses = FakeResponsesAPI(arguments, tool_name)
 
 
 class StubIntentCompiler:
@@ -115,13 +124,17 @@ async def test_ai_compiler_uses_function_call_and_accepts_unconnected_notes() ->
     )
     compiler = AIIntentCompiler("test-model", client=fake_client)
 
-    brief = await compiler.compile(canvas)
+    brief = await compiler.compile(
+        canvas,
+        project_context="--- src/main.js ---\nexport const tasks = [];",
+    )
 
     assert [requirement.id for requirement in brief.requirements] == ["REQ-01", "REQ-02"]
     request = fake_client.responses.requests[0]
     assert "tool_choice" not in request
     assert request["tools"][0]["name"] == "submit_intent_brief"
     assert "note-add" in request["input"][0]["content"]
+    assert "src/main.js" in request["input"][0]["content"]
 
 
 async def test_ai_compiler_allows_supplemental_text_without_source_note() -> None:
@@ -145,6 +158,60 @@ async def test_ai_compiler_allows_supplemental_text_without_source_note() -> Non
     brief = await AIIntentCompiler("test-model", client=fake_client).compile(canvas)
 
     assert brief.requirements[0].source_ids == []
+
+
+async def test_agent_request_can_reply_without_running_when_latest_message_is_greeting() -> None:
+    canvas = IntentCanvas(
+        notes=[
+            note("canvas-task", "增加筛选功能", "behavior"),
+            note("message-1", "你好", "idea"),
+        ]
+    )
+    fake_client = FakeOpenAIClient(
+        {"message": "你好，请告诉我这次希望修改或验证什么。"},
+        tool_name="respond_to_user",
+    )
+
+    decision = await AIIntentCompiler(
+        "test-model",
+        client=fake_client,
+    ).compile_agent_request(
+        canvas,
+        "message-1",
+        project_context="--- src/main.js ---\nexport const tasks = [];",
+    )
+
+    assert decision.brief is None
+    assert decision.response == "你好，请告诉我这次希望修改或验证什么。"
+    request = fake_client.responses.requests[0]
+    assert [tool["name"] for tool in request["tools"]] == [
+        "submit_intent_brief",
+        "respond_to_user",
+    ]
+    assert "message-1" in request["input"][0]["content"]
+    assert "src/main.js" in request["input"][0]["content"]
+
+
+async def test_plan_request_answers_project_question_without_manufacturing_a_plan() -> None:
+    canvas = IntentCanvas(notes=[note("message-1", "我们这是一个什么项目", "idea")])
+    fake_client = FakeOpenAIClient(
+        {"message": "这是 IntentFlow 使用的 Todo 演示项目。"},
+        tool_name="respond_to_user",
+    )
+
+    decision = await AIIntentCompiler(
+        "test-model",
+        client=fake_client,
+    ).compile_plan_request(
+        canvas,
+        "message-1",
+        project_context="Project: todo-demo",
+    )
+
+    assert decision.brief is None
+    assert decision.response == "这是 IntentFlow 使用的 Todo 演示项目。"
+    request = fake_client.responses.requests[0]
+    assert "must not turn a question into a plan" in request["instructions"]
 
 
 async def test_ai_compiler_rejects_an_invented_source_id() -> None:

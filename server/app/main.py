@@ -2,11 +2,16 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import dotenv_values
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.agent.models import IntentBrief
+from app.conversation_service import (
+    ConversationResponder,
+    ConversationResponseError,
+    build_project_context,
+)
 from app.intent import (
     AIIntentCompiler,
     CanvasCompileRequest,
@@ -15,7 +20,16 @@ from app.intent import (
     compile_canvas,
     validate_canvas_input,
 )
+from app.intent.models import CanvasNote, CanvasPosition, IntentCanvas
 from app.runs import RunManager, RunRecord, RunReviewError, RunSnapshot
+from app.sessions import (
+    ConversationMessage,
+    ConversationMode,
+    ProjectRecord,
+    SessionDetail,
+    SessionRecord,
+    SessionStore,
+)
 from app.workspaces import (
     ChangeSummary,
     FileDiff,
@@ -46,12 +60,38 @@ app = FastAPI(
     description="Local API for the IntentFlow coding agent.",
 )
 repository_root = Path(__file__).resolve().parents[2]
-run_manager = RunManager(repository_root)
+project_record = ProjectRecord(
+    id="todo-demo",
+    name="todo-demo",
+    relative_path="examples/todo-demo",
+)
+session_store = SessionStore(repository_root / "runtime-data" / "intentflow.db")
+session_store.ensure_project(project_record)
+run_manager = RunManager(repository_root, snapshot_sink=session_store.save_run)
+for stored_run in session_store.load_runs():
+    run_manager.restore(stored_run)
 workspace_service = WorkspaceService()
 
 
 class CreateRunRequest(BaseModel):
     intent: IntentBrief
+
+
+class CreateSessionRequest(BaseModel):
+    title: str = "新对话"
+
+
+class SendSessionMessageRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=20_000)
+    mode: ConversationMode = "agent"
+    attach_canvas: bool = False
+    canvas: IntentCanvas | None = None
+
+
+class SendSessionMessageResponse(BaseModel):
+    user_message: ConversationMessage
+    assistant_message: ConversationMessage
+    run: RunSnapshot | None = None
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -66,6 +106,191 @@ async def get_project() -> ProjectResponse:
         name="todo-demo",
         relativePath="examples/todo-demo",
         ready=project_path.is_dir(),
+    )
+
+
+@app.get("/api/sessions", response_model=list[SessionRecord])
+async def list_sessions() -> list[SessionRecord]:
+    return session_store.list_sessions(project_record.id)
+
+
+@app.post("/api/sessions", response_model=SessionRecord, status_code=201)
+async def create_session(request: CreateSessionRequest) -> SessionRecord:
+    return session_store.create_session(project_record.id, request.title)
+
+
+@app.get("/api/sessions/{session_id}", response_model=SessionDetail)
+async def get_session(session_id: str) -> SessionDetail:
+    detail = session_store.get_detail(session_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    return detail
+
+
+@app.delete("/api/sessions/{session_id}", status_code=204)
+async def delete_session(session_id: str) -> Response:
+    detail = session_store.get_detail(session_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    if any(run.status == "running" for run in detail.runs):
+        raise HTTPException(status_code=409, detail="运行中的对话不能删除，请先停止 Agent")
+
+    try:
+        for run in detail.runs:
+            run_manager.delete(run.id, run.workspace_relative_path)
+    except (OSError, RunReviewError) as error:
+        raise HTTPException(status_code=503, detail=f"删除运行副本失败：{error}") from error
+
+    session_store.delete_session(session_id)
+    return Response(status_code=204)
+
+
+@app.post(
+    "/api/sessions/{session_id}/messages",
+    response_model=SendSessionMessageResponse,
+    status_code=201,
+)
+async def send_session_message(
+    session_id: str,
+    request: SendSessionMessageRequest,
+) -> SendSessionMessageResponse:
+    if session_store.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    content = request.content.strip()
+    if not content:
+        raise HTTPException(status_code=422, detail="消息内容不能为空")
+    if request.attach_canvas and request.canvas is None:
+        raise HTTPException(status_code=422, detail="选择附加 Canvas 时必须提供当前画布")
+    if request.mode == "agent":
+        pending_run = session_store.get_pending_review_run(session_id)
+        if pending_run is not None:
+            detail = (
+                "上一轮 Agent 仍在运行，请等待运行结束后应用或放弃修改"
+                if pending_run.status == "running"
+                else "请先应用或放弃上一轮 Agent 修改，再开始下一轮"
+            )
+            raise HTTPException(status_code=409, detail=detail)
+
+    canvas_snapshot = (
+        session_store.add_canvas_snapshot(session_id, request.canvas)
+        if request.attach_canvas and request.canvas is not None
+        else None
+    )
+    user_message = session_store.add_message(
+        session_id,
+        "user",
+        request.mode,
+        content,
+        canvas_snapshot_id=canvas_snapshot.id if canvas_snapshot else None,
+    )
+    history = session_store.get_detail(session_id)
+    if history is None:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    project_context = build_project_context(
+        repository_root / Path(project_record.relative_path)
+    )
+
+    if request.mode == "ask":
+        try:
+            answer = await create_conversation_responder().answer(
+                history.messages,
+                canvas_snapshot.canvas if canvas_snapshot else None,
+                project_context,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except ConversationResponseError as error:
+            raise HTTPException(status_code=502, detail=f"AI 回复失败：{error}") from error
+        assistant_message = session_store.add_message(session_id, "assistant", "ask", answer)
+        return SendSessionMessageResponse(
+            user_message=user_message,
+            assistant_message=assistant_message,
+        )
+
+    compilation_canvas = conversation_canvas(
+        user_message,
+        canvas_snapshot.canvas if canvas_snapshot else None,
+        history.messages[:-1],
+    )
+    try:
+        compiler = create_ai_intent_compiler()
+        if request.mode == "agent":
+            decision = await compiler.compile_agent_request(
+                compilation_canvas,
+                user_message.id,
+                project_context=project_context,
+            )
+            if decision.brief is None:
+                assistant_message = session_store.add_message(
+                    session_id,
+                    "assistant",
+                    "agent",
+                    decision.response or "请告诉我希望修改或验证的具体内容。",
+                )
+                return SendSessionMessageResponse(
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                )
+            brief = decision.brief
+        else:
+            decision = await compiler.compile_plan_request(
+                compilation_canvas,
+                user_message.id,
+                project_context=project_context,
+            )
+            if decision.brief is None:
+                assistant_message = session_store.add_message(
+                    session_id,
+                    "assistant",
+                    "plan",
+                    decision.response or "请告诉我希望规划的具体改动。",
+                )
+                return SendSessionMessageResponse(
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                )
+            brief = decision.brief
+    except ValueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except IntentCompileError as error:
+        raise HTTPException(status_code=502, detail=f"AI 意图整理失败：{error}") from error
+
+    if request.mode == "plan":
+        assistant_message = session_store.add_message(
+            session_id,
+            "assistant",
+            "plan",
+            f"我根据当前项目整理了《{brief.title}》计划。",
+            intent=brief,
+        )
+        return SendSessionMessageResponse(
+            user_message=user_message,
+            assistant_message=assistant_message,
+        )
+
+    try:
+        run = run_manager.start(
+            brief,
+            session_id=session_id,
+            trigger_message_id=user_message.id,
+        )
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except (OSError, ValueError) as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    session_store.attach_run(user_message.id, run.id)
+    assistant_message = session_store.add_message(
+        session_id,
+        "assistant",
+        "agent",
+        f"已整理为《{brief.title}》，开始在隔离工作区执行。",
+        run_id=run.id,
+        intent=brief,
+    )
+    return SendSessionMessageResponse(
+        user_message=user_message.model_copy(update={"run_id": run.id}),
+        assistant_message=assistant_message,
+        run=run,
     )
 
 
@@ -118,18 +343,60 @@ async def compile_intent(request: CanvasCompileRequest) -> CanvasCompileResponse
 
 
 def create_ai_intent_compiler() -> AIIntentCompiler:
-    config = dotenv_values(repository_root / ".env")
-    api_key = (config.get("OPENAI_API_KEY") or "").strip()
-    model = (config.get("OPENAI_MODEL") or "").strip()
-    base_url = (config.get("OPENAI_BASE_URL") or "").strip() or None
-    if not api_key or not model:
-        raise ValueError("请先在根目录 .env 配置 OPENAI_API_KEY 和 OPENAI_MODEL")
+    api_key, model, base_url = model_config()
     return AIIntentCompiler(
         model,
         api_key=api_key,
         base_url=base_url,
         timeout_seconds=120.0,
     )
+
+
+def create_conversation_responder() -> ConversationResponder:
+    api_key, model, base_url = model_config()
+    return ConversationResponder(
+        model,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_seconds=120.0,
+    )
+
+
+def model_config() -> tuple[str, str, str | None]:
+    config = dotenv_values(repository_root / ".env")
+    api_key = (config.get("OPENAI_API_KEY") or "").strip()
+    model = (config.get("OPENAI_MODEL") or "").strip()
+    base_url = (config.get("OPENAI_BASE_URL") or "").strip() or None
+    if not api_key or not model:
+        raise ValueError("请先在根目录 .env 配置 OPENAI_API_KEY 和 OPENAI_MODEL")
+    return api_key, model, base_url
+
+
+def conversation_canvas(
+    message: ConversationMessage,
+    attached_canvas: IntentCanvas | None,
+    previous_messages: list[ConversationMessage],
+) -> IntentCanvas:
+    canvas = attached_canvas.model_copy(deep=True) if attached_canvas else IntentCanvas()
+    canvas.notes.append(
+        CanvasNote(
+            id=message.id,
+            text=message.content,
+            label="idea",
+            position=CanvasPosition(x=0, y=0),
+        )
+    )
+    prior_context = [
+        f"{item.role}: {item.content}"
+        for item in previous_messages
+        if item.content.strip()
+    ]
+    if prior_context:
+        context_text = "此前对话（仅作为上下文）：\n" + "\n".join(prior_context)
+        canvas.supplemental_text = "\n\n".join(
+            part for part in [canvas.supplemental_text.strip(), context_text] if part
+        )
+    return canvas
 
 
 @app.post("/api/runs", response_model=RunSnapshot, status_code=201)

@@ -4,6 +4,8 @@ import {
   acceptRun,
   compileIntent,
   createRun,
+  createSession,
+  deleteSession,
   discardRun,
   getHealth,
   getProjectFile,
@@ -12,6 +14,9 @@ import {
   getRunFile,
   getRunFileDiff,
   getRunTree,
+  getSession,
+  listSessions,
+  sendSessionMessage,
   stopRun,
   type IntentCanvas,
 } from "./api";
@@ -167,6 +172,88 @@ describe("getHealth", () => {
       2,
       "/api/runs/run-1/discard",
       expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("creates, lists, reads, and sends messages to a session", async () => {
+    const session = {
+      id: "session-1",
+      project_id: "todo-demo",
+      title: "新对话",
+      created_at: "2026-08-29T00:00:00Z",
+      updated_at: "2026-08-29T00:00:00Z",
+    };
+    const detail = { session, messages: [], canvas_snapshots: [], runs: [] };
+    const sent = {
+      user_message: {
+        id: "message-1",
+        session_id: session.id,
+        role: "user",
+        mode: "agent",
+        content: "增加筛选功能",
+        canvas_snapshot_id: null,
+        run_id: "run-1",
+        intent: null,
+        created_at: session.created_at,
+        sequence: 1,
+      },
+      assistant_message: {
+        id: "message-2",
+        session_id: session.id,
+        role: "assistant",
+        mode: "agent",
+        content: "开始执行",
+        canvas_snapshot_id: null,
+        run_id: "run-1",
+        intent: null,
+        created_at: session.created_at,
+        sequence: 2,
+      },
+      run: null,
+    };
+    const payloads = [[session], session, detail, sent];
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
+      new Response(JSON.stringify(payloads.shift()), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listSessions();
+    await createSession();
+    await getSession(session.id);
+    await sendSessionMessage(session.id, "增加筛选功能", "agent", null);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/sessions",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ title: "新对话" }) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/api/sessions/session-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: "增加筛选功能",
+          mode: "agent",
+          attach_canvas: false,
+          canvas: null,
+        }),
+      }),
+    );
+  });
+
+  it("deletes a session", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await deleteSession("session-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/session-1",
+      { method: "DELETE" },
     );
   });
 

@@ -6,37 +6,34 @@ import {
   useEdgesState,
   useNodesState,
   type Connection,
-  type EdgeChange,
-  type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
   ArrowRight,
-  Check,
   CircleDot,
   FileCode2,
   GitCompareArrows,
   Link2,
-  LoaderCircle,
-  Play,
+  MessageSquarePlus,
   Plus,
   RotateCcw,
   Sparkles,
   Square,
+  Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   TODO_EXAMPLE_EDGES,
   TODO_EXAMPLE_NODES,
-  edgeChangesInvalidateIntent,
   isStoredCanvas,
-  nodeChangesInvalidateIntent,
   toIntentCanvas,
   type NoteNode as NoteNodeType,
 } from "./features/canvas/canvasState";
 import { NoteNode, NoteNodeProvider } from "./features/canvas/NoteNode";
 import { SingleRunConversation } from "./features/run/SingleRunConversation";
+import { ConversationComposer } from "./features/session/ConversationComposer";
+import { SessionConversation } from "./features/session/SessionConversation";
 import { CodeWorkspace, type OpenWorkspaceFile } from "./features/workspace/CodeWorkspace";
 import { DiffWorkspace } from "./features/workspace/DiffWorkspace";
 import { ProjectExplorer } from "./features/workspace/ProjectExplorer";
@@ -47,8 +44,8 @@ import {
 } from "./features/workspace/workspaceState";
 import {
   acceptRun,
-  compileIntent,
-  createRun,
+  createSession,
+  deleteSession,
   discardRun,
   getHealth,
   getProject,
@@ -59,28 +56,34 @@ import {
   getRunFile,
   getRunFileDiff,
   getRunTree,
+  getSession,
+  listSessions,
+  sendSessionMessage,
   stopRun,
   subscribeToRun,
   type CanvasNoteLabel,
   type ChangeSummary,
+  type ConversationMessage,
+  type ConversationMode,
   type FileChange,
   type FileDiff,
   type IntentBrief,
   type ProjectResponse,
   type RunSnapshot,
+  type SessionRecord,
   type WorkspaceScope,
   type WorkspaceTree,
 } from "./services/api";
 
 type ConnectionState = "checking" | "connected" | "failed";
-type CompileState = "idle" | "compiling" | "completed" | "failed";
-type CompilerKind = "ai" | "local";
 
 const phases = ["表达想法", "整理意图", "修改代码", "运行验证", "审查修改"];
 const STORAGE_KEY = "intentflow.canvas.v1";
 const CONVERSATION_WIDTH_KEY = "intentflow.conversation-width.v1";
+const ACTIVE_SESSION_KEY = "intentflow.active-session.v1";
 const MIN_CONVERSATION_WIDTH = 300;
-const MAX_CONVERSATION_WIDTH = 640;
+const LEFT_PANEL_WIDTH = 240;
+const MIN_MAIN_WORKSPACE_WIDTH = 80;
 const nodeTypes = { note: NoteNode };
 
 function loadCanvas() {
@@ -98,7 +101,11 @@ function loadCanvas() {
 }
 
 function clampConversationWidth(width: number): number {
-  return Math.min(MAX_CONVERSATION_WIDTH, Math.max(MIN_CONVERSATION_WIDTH, width));
+  const maximumWidth = Math.max(
+    MIN_CONVERSATION_WIDTH,
+    window.innerWidth - LEFT_PANEL_WIDTH - MIN_MAIN_WORKSPACE_WIDTH,
+  );
+  return Math.min(maximumWidth, Math.max(MIN_CONVERSATION_WIDTH, width));
 }
 
 function loadConversationWidth(): number {
@@ -114,11 +121,6 @@ export function App() {
   const [connectionLabel, setConnectionLabel] = useState("相关");
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [project, setProject] = useState<ProjectResponse | null>(null);
-  const [brief, setBrief] = useState<IntentBrief | null>(null);
-  const [compilerKind, setCompilerKind] = useState<CompilerKind | null>(null);
-  const [compilerNotice, setCompilerNotice] = useState("");
-  const [compileState, setCompileState] = useState<CompileState>("idle");
-  const [compileError, setCompileError] = useState("");
   const [run, setRun] = useState<RunSnapshot | null>(null);
   const [runBrief, setRunBrief] = useState<IntentBrief | null>(null);
   const [runError, setRunError] = useState("");
@@ -137,6 +139,16 @@ export function App() {
   const [diffError, setDiffError] = useState("");
   const [conversationWidth, setConversationWidth] = useState(loadConversationWidth);
   const [isResizingConversation, setIsResizingConversation] = useState(false);
+  const [sessions, setSessions] = useState<SessionRecord[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [sessionMessages, setSessionMessages] = useState<ConversationMessage[]>([]);
+  const [sessionRuns, setSessionRuns] = useState<RunSnapshot[]>([]);
+  const [messageDraft, setMessageDraft] = useState("");
+  const [conversationMode, setConversationMode] = useState<ConversationMode>("agent");
+  const [attachCanvas, setAttachCanvas] = useState(false);
+  const [messageSending, setMessageSending] = useState(false);
+  const [sessionDeleting, setSessionDeleting] = useState(false);
+  const [messageError, setMessageError] = useState("");
   const closeRunStream = useRef<(() => void) | null>(null);
   const diffRequestSequence = useRef(0);
   const workspaceTabRef = useRef<WorkspaceTab>("canvas");
@@ -146,7 +158,11 @@ export function App() {
     let active = true;
     async function bootstrap() {
       try {
-        const [health, projectInfo] = await Promise.all([getHealth(), getProject()]);
+        const [health, projectInfo, availableSessions] = await Promise.all([
+          getHealth(),
+          getProject(),
+          listSessions(),
+        ]);
         if (active && health.status === "ok") {
           setConnection("connected");
           setProject(projectInfo);
@@ -154,6 +170,71 @@ export function App() {
             setProjectTree(await getProjectTree());
           } catch (error) {
             setWorkspaceError(errorMessage(error, "无法读取项目文件"));
+          }
+
+          const storedSessionId = localStorage.getItem(ACTIVE_SESSION_KEY);
+          let selectedSession = availableSessions.find(
+            (session) => session.id === storedSessionId,
+          ) ?? availableSessions[0];
+          if (!selectedSession) {
+            selectedSession = await createSession();
+            availableSessions.unshift(selectedSession);
+          }
+          if (!active) return;
+          setSessions(availableSessions);
+          setActiveSessionId(selectedSession.id);
+          localStorage.setItem(ACTIVE_SESSION_KEY, selectedSession.id);
+
+          const detail = await getSession(selectedSession.id);
+          if (!active) return;
+          setSessionMessages(detail.messages);
+          setSessionRuns(detail.runs);
+          const latestRun = detail.runs.at(-1) ?? null;
+          setRun(latestRun);
+          setRunBrief(latestRun?.intent ?? null);
+          if (latestRun) {
+            try {
+              setRunTree(await getRunTree(latestRun.id));
+              if (latestRun.status !== "running") {
+                setChanges(await getRunChanges(latestRun.id));
+              } else {
+                const refreshRestoredRun = async () => {
+                  try {
+                    const snapshot = await getRun(latestRun.id);
+                    if (!active) return;
+                    setRun(snapshot);
+                    setSessionRuns((currentRuns) => currentRuns.map(
+                      (item) => item.id === snapshot.id ? snapshot : item,
+                    ));
+                    setRunTree(await getRunTree(snapshot.id));
+                    if (snapshot.status !== "running") {
+                      setChanges(await getRunChanges(snapshot.id));
+                    }
+                  } catch (error) {
+                    if (active) {
+                      setRunError(errorMessage(error, "无法读取运行结果"));
+                    }
+                  }
+                };
+                closeRunStream.current = subscribeToRun(
+                  latestRun.id,
+                  (event) => {
+                    setRun((current) => current?.id === latestRun.id
+                      ? {
+                          ...current,
+                          events: current.events.some((item) => item.sequence === event.sequence)
+                            ? current.events
+                            : [...current.events, event],
+                        }
+                      : current);
+                  },
+                  () => void refreshRestoredRun(),
+                  () => void refreshRestoredRun(),
+                );
+              }
+            } catch (error) {
+              setWorkspaceError(errorMessage(error, "无法恢复运行工作区"));
+            }
           }
         }
       } catch (error) {
@@ -176,6 +257,15 @@ export function App() {
   useEffect(() => {
     localStorage.setItem(CONVERSATION_WIDTH_KEY, String(conversationWidth));
   }, [conversationWidth]);
+
+  useEffect(() => {
+    function handleWindowResize() {
+      setConversationWidth((width) => clampConversationWidth(width));
+    }
+
+    window.addEventListener("resize", handleWindowResize);
+    return () => window.removeEventListener("resize", handleWindowResize);
+  }, []);
 
   useEffect(() => {
     if (!isResizingConversation) return;
@@ -209,14 +299,6 @@ export function App() {
     activeDiffPathRef.current = activeDiffPath;
   }, [activeDiffPath, workspaceTab]);
 
-  const resetCompilation = useCallback(() => {
-    setBrief(null);
-    setCompilerKind(null);
-    setCompilerNotice("");
-    setCompileError("");
-    setCompileState("idle");
-  }, []);
-
   const updateNote = useCallback(
     (id: string, text: string, label: CanvasNoteLabel | null) => {
       setNodes((currentNodes) =>
@@ -224,9 +306,8 @@ export function App() {
           node.id === id ? { ...node, data: { ...node.data, text, label } } : node,
         ),
       );
-      resetCompilation();
     },
-    [resetCompilation, setNodes],
+    [setNodes],
   );
 
   const removeNote = useCallback(
@@ -235,9 +316,8 @@ export function App() {
       setEdges((currentEdges) =>
         currentEdges.filter((edge) => edge.source !== id && edge.target !== id),
       );
-      resetCompilation();
     },
-    [resetCompilation, setEdges, setNodes],
+    [setEdges, setNodes],
   );
 
   const callbacks = useMemo(
@@ -250,29 +330,8 @@ export function App() {
       setEdges((currentEdges) =>
         addEdge({ ...params, label: connectionLabel.trim() || "相关" }, currentEdges),
       );
-      resetCompilation();
     },
-    [connectionLabel, resetCompilation, setEdges],
-  );
-
-  const handleNodesChange = useCallback(
-    (changes: NodeChange<NoteNodeType>[]) => {
-      onNodesChange(changes);
-      if (nodeChangesInvalidateIntent(changes)) {
-        resetCompilation();
-      }
-    },
-    [onNodesChange, resetCompilation],
-  );
-
-  const handleEdgesChange = useCallback(
-    (changes: EdgeChange[]) => {
-      onEdgesChange(changes);
-      if (edgeChangesInvalidateIntent(changes)) {
-        resetCompilation();
-      }
-    },
-    [onEdgesChange, resetCompilation],
+    [connectionLabel, setEdges],
   );
 
   function addNote() {
@@ -286,14 +345,12 @@ export function App() {
         data: { text: "", label: null },
       },
     ]);
-    resetCompilation();
   }
 
   function restoreExample() {
     setNodes(TODO_EXAMPLE_NODES.map((node) => ({ ...node, data: { ...node.data } })));
     setEdges(TODO_EXAMPLE_EDGES.map((edge) => ({ ...edge })));
     setSupplementalText("这个功能要适合两分钟内现场演示。");
-    resetCompilation();
   }
 
   function clearRunReview() {
@@ -313,36 +370,13 @@ export function App() {
     }
   }
 
-  async function handleCompile(compiler: CompilerKind = "ai") {
-    setRun(null);
-    setRunBrief(null);
-    setRunError("");
-    clearRunReview();
-    setWorkspaceTab("canvas");
-    setCompileState("compiling");
-    setCompileError("");
-    setBrief(null);
-    setCompilerKind(null);
-    setCompilerNotice("");
-    try {
-      const result = await compileIntent(
-        toIntentCanvas(nodes, edges, supplementalText),
-        compiler,
-      );
-      setBrief(result.brief);
-      setCompilerKind(result.compiler);
-      setCompilerNotice(result.notice);
-      setCompileState("completed");
-    } catch (error) {
-      setCompileError(error instanceof Error ? error.message : "意图整理失败");
-      setCompileState("failed");
-    }
-  }
-
   async function refreshRun(runId: string) {
     try {
       const snapshot = await getRun(runId);
       setRun(snapshot);
+      setSessionRuns((currentRuns) => currentRuns.map(
+        (item) => item.id === snapshot.id ? snapshot : item,
+      ));
       await loadRunFacts(snapshot);
     } catch (error) {
       setRunError(error instanceof Error ? error.message : "无法读取运行结果");
@@ -375,35 +409,167 @@ export function App() {
     }
   }
 
-  async function handleRun() {
-    if (!brief) return;
-    setRunError("");
+  function watchRun(snapshot: RunSnapshot) {
+    closeRunStream.current?.();
+    closeRunStream.current = subscribeToRun(
+      snapshot.id,
+      (event) => {
+        setRun((current) =>
+          current?.id === snapshot.id
+            ? {
+                ...current,
+                events: current.events.some((item) => item.sequence === event.sequence)
+                  ? current.events
+                  : [...current.events, event],
+              }
+            : current,
+        );
+      },
+      () => void refreshRun(snapshot.id),
+      () => void refreshRun(snapshot.id),
+    );
+  }
+
+  async function selectSessionRun(snapshot: RunSnapshot) {
     closeRunStream.current?.();
     clearRunReview();
+    setRun(snapshot);
+    setRunBrief(snapshot.intent);
+    await loadRunFacts(snapshot);
+    if (snapshot.status === "running") watchRun(snapshot);
+  }
+
+  async function loadSessionIntoView(sessionId: string) {
+    setMessageError("");
+    closeRunStream.current?.();
+    clearRunReview();
+    setRun(null);
+    setRunBrief(null);
+    setActiveSessionId(sessionId);
+    localStorage.setItem(ACTIVE_SESSION_KEY, sessionId);
     try {
-      const created = await createRun(brief);
-      setRun(created);
-      setRunBrief(brief);
-      void loadRunFacts(created);
-      closeRunStream.current = subscribeToRun(
-        created.id,
-        (event) => {
-          setRun((current) =>
-            current
-              ? {
-                  ...current,
-                  events: current.events.some((item) => item.sequence === event.sequence)
-                    ? current.events
-                    : [...current.events, event],
-                }
-              : current,
-          );
-        },
-        () => void refreshRun(created.id),
-        () => void refreshRun(created.id),
-      );
+      const detail = await getSession(sessionId);
+      setSessionMessages(detail.messages);
+      setSessionRuns(detail.runs);
+      const latestRun = detail.runs.at(-1);
+      if (latestRun) await selectSessionRun(latestRun);
     } catch (error) {
-      setRunError(error instanceof Error ? error.message : "Agent 启动失败");
+      setMessageError(errorMessage(error, "无法读取对话"));
+    }
+  }
+
+  async function handleCreateSession() {
+    setMessageError("");
+    try {
+      const created = await createSession();
+      setSessions((current) => [created, ...current]);
+      setSessionMessages([]);
+      setSessionRuns([]);
+      setMessageDraft("");
+      await loadSessionIntoView(created.id);
+    } catch (error) {
+      setMessageError(errorMessage(error, "无法新建对话"));
+    }
+  }
+
+  async function handleDeleteSession() {
+    if (!activeSessionId || sessionDeleting) return;
+    if (sessionRuns.some((sessionRun) => sessionRun.status === "running")) {
+      setMessageError("运行中的对话不能删除，请先停止 Agent");
+      return;
+    }
+    const activeSession = sessions.find((session) => session.id === activeSessionId);
+    const reviewWarning = sessionRuns.some((sessionRun) => sessionRun.review_status === "pending")
+      ? " 未应用的修改也会一并放弃。"
+      : "";
+    const confirmed = window.confirm(
+      `删除对话“${activeSession?.title ?? "当前对话"}”吗？${reviewWarning}此操作会删除消息、Canvas 快照、运行历史和隔离副本，但不会修改项目当前版本。`,
+    );
+    if (!confirmed) return;
+
+    setSessionDeleting(true);
+    setMessageError("");
+    try {
+      closeRunStream.current?.();
+      await deleteSession(activeSessionId);
+      let remainingSessions = await listSessions();
+      if (remainingSessions.length === 0) {
+        remainingSessions = [await createSession()];
+      }
+      setSessions(remainingSessions);
+      setSessionMessages([]);
+      setSessionRuns([]);
+      setRun(null);
+      setRunBrief(null);
+      await loadSessionIntoView(remainingSessions[0].id);
+    } catch (error) {
+      setMessageError(errorMessage(error, "删除对话失败"));
+    } finally {
+      setSessionDeleting(false);
+    }
+  }
+
+  async function handleSendMessage() {
+    if (!activeSessionId || !messageDraft.trim()) return;
+    if (conversationMode === "agent" && pendingReviewRun) {
+      setMessageError(agentBlockReason);
+      return;
+    }
+    const content = messageDraft.trim();
+    const optimisticMessageId = `pending-${Date.now()}`;
+    const optimisticMessage: ConversationMessage = {
+      id: optimisticMessageId,
+      session_id: activeSessionId,
+      role: "user",
+      mode: conversationMode,
+      content,
+      canvas_snapshot_id: attachCanvas ? "pending" : null,
+      run_id: null,
+      intent: null,
+      created_at: new Date().toISOString(),
+      sequence: (sessionMessages.at(-1)?.sequence ?? 0) + 1,
+    };
+    setSessionMessages((current) => [...current, optimisticMessage]);
+    setMessageDraft("");
+    setMessageSending(true);
+    setMessageError("");
+    try {
+      const response = await sendSessionMessage(
+        activeSessionId,
+        content,
+        conversationMode,
+        attachCanvas ? toIntentCanvas(nodes, edges, supplementalText) : null,
+      );
+      setSessionMessages((current) => [
+        ...current.filter((message) => message.id !== optimisticMessageId),
+        response.user_message,
+        response.assistant_message,
+      ]);
+      setSessions(await listSessions());
+
+      const createdRun = response.run;
+      if (createdRun) {
+        clearRunReview();
+        setRun(createdRun);
+        setRunBrief(createdRun.intent ?? response.assistant_message.intent);
+        setSessionRuns((current) => [...current, createdRun]);
+        void loadRunFacts(createdRun);
+        watchRun(createdRun);
+      }
+    } catch (error) {
+      setMessageError(errorMessage(error, "消息发送失败"));
+      setSessionMessages((current) => current.filter(
+        (message) => message.id !== optimisticMessageId,
+      ));
+      try {
+        const detail = await getSession(activeSessionId);
+        setSessionMessages(detail.messages);
+        setSessionRuns(detail.runs);
+      } catch {
+        // Keep the original send error visible.
+      }
+    } finally {
+      setMessageSending(false);
     }
   }
 
@@ -430,6 +596,9 @@ export function App() {
     try {
       const updated = await acceptRun(run.id);
       setRun(updated);
+      setSessionRuns((currentRuns) => currentRuns.map(
+        (item) => item.id === updated.id ? updated : item,
+      ));
       setProjectTree(await getProjectTree());
       await refreshOpenProjectFiles();
     } catch (error) {
@@ -449,7 +618,11 @@ export function App() {
     setReviewAction("discard");
     setReviewError("");
     try {
-      setRun(await discardRun(run.id));
+      const updated = await discardRun(run.id);
+      setRun(updated);
+      setSessionRuns((currentRuns) => currentRuns.map(
+        (item) => item.id === updated.id ? updated : item,
+      ));
     } catch (error) {
       setReviewError(errorMessage(error, "放弃修改失败"));
     } finally {
@@ -603,7 +776,17 @@ export function App() {
     failed: "后端连接失败",
   }[connection];
   const isRunning = run?.status === "running";
-  const activePhaseCount = run ? (run.status === "running" ? 4 : 5) : brief ? 2 : 1;
+  const pendingReviewRun = [...sessionRuns]
+    .reverse()
+    .find((sessionRun) => sessionRun.review_status === "pending") ?? null;
+  const agentBlockReason = pendingReviewRun?.status === "running"
+    ? "当前 Agent 运行结束并处理修改后才能开始下一轮"
+    : pendingReviewRun
+      ? "请先应用或放弃上一轮 Agent 修改"
+      : "";
+  const activePhaseCount = run
+    ? run.status === "running" ? 4 : 5
+    : sessionMessages.length > 0 ? 2 : 1;
   const runStatusText = run
     ? { running: "运行中", completed: "已完成", failed: "失败", stopped: "已停止" }[run.status]
     : "待运行";
@@ -621,6 +804,21 @@ export function App() {
   const reviewStatusText = run
     ? { pending: "待审查", accepted: "已接受", discarded: "已放弃" }[run.review_status]
     : "待运行";
+  const selectedRunDetail = run && runBrief ? (
+    <SingleRunConversation
+      brief={runBrief}
+      run={run}
+      runError={runError}
+      changes={changes}
+      reviewAction={reviewAction}
+      reviewError={reviewError}
+      onHighlightSources={highlightSources}
+      onOpenRelatedFile={(path) => void openRelatedFile(path)}
+      onAccept={() => void handleAccept()}
+      onDiscard={() => void handleDiscard()}
+      showIntentContext={!run.session_id}
+    />
+  ) : null;
 
   return (
     <main className="workspace-shell">
@@ -635,28 +833,9 @@ export function App() {
           <div className={`connection-state connection-state--${connection}`}>
             <span className="connection-dot" aria-hidden="true" />{statusText}
           </div>
-          <button
-            className="compile-button"
-            type="button"
-            disabled={compileState === "compiling" || connection !== "connected" || isRunning}
-            onClick={() => void handleCompile("ai")}
-          >
-            {compileState === "compiling" ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}
-            整理意图
-          </button>
-          {isRunning ? (
+          {isRunning && (
             <button className="stop-button" type="button" onClick={() => void handleStop()}>
               <Square size={13} fill="currentColor" />停止
-            </button>
-          ) : (
-            <button
-              className="run-button"
-              type="button"
-              disabled={!brief || connection !== "connected"}
-              title={brief ? "在 Todo 临时副本中运行" : "请先整理意图"}
-              onClick={() => void handleRun()}
-            >
-              <Play size={15} fill="currentColor" />运行 Agent
             </button>
           )}
         </div>
@@ -673,7 +852,7 @@ export function App() {
 
       <div
         className="workspace-grid"
-        style={{ gridTemplateColumns: `240px minmax(520px, 1fr) ${conversationWidth}px` }}
+        style={{ gridTemplateColumns: `240px minmax(80px, 1fr) ${conversationWidth}px` }}
       >
         <ProjectExplorer
           projectTree={projectTree}
@@ -732,10 +911,7 @@ export function App() {
                     <input
                       value={supplementalText}
                       placeholder="还有一些不好放进便签的话……"
-                      onChange={(event) => {
-                        setSupplementalText(event.target.value);
-                        resetCompilation();
-                      }}
+                      onChange={(event) => setSupplementalText(event.target.value)}
                     />
                   </label>
                 </div>
@@ -748,8 +924,8 @@ export function App() {
                     <ReactFlow<NoteNodeType>
                       fitView nodes={nodes} edges={edges} nodeTypes={nodeTypes}
                       minZoom={0.55} maxZoom={1.45}
-                      onConnect={onConnect} onNodesChange={handleNodesChange}
-                      onEdgesChange={handleEdgesChange}
+                      onConnect={onConnect} onNodesChange={onNodesChange}
+                      onEdgesChange={onEdgesChange}
                     >
                       <Background
                         color="#d6d5cf" gap={20} size={1}
@@ -803,79 +979,63 @@ export function App() {
             }}
           />
           <aside className="run-panel intent-panel">
-            <div className="panel-heading">
-              <span>{run ? "单轮协作记录" : "意图理解摘要"}</span>
-              <span className={`run-state run-state--${run?.status ?? compileState}`}>
-                {run
-                  ? runStatusText
-                  : compileState === "completed"
-                    ? compilerKind === "ai"
-                      ? "AI 已整理"
-                      : "本地降级"
-                    : compileState === "failed"
-                      ? "失败"
-                      : "待整理"}
+            <div className="panel-heading session-heading">
+              <select
+                aria-label="当前对话"
+                value={activeSessionId ?? ""}
+                disabled={sessions.length === 0 || messageSending || sessionDeleting}
+                onChange={(event) => void loadSessionIntoView(event.target.value)}
+              >
+                {sessions.map((session) => (
+                  <option value={session.id} key={session.id}>{session.title}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                title="新建对话"
+                aria-label="新建对话"
+                disabled={messageSending || sessionDeleting}
+                onClick={() => void handleCreateSession()}
+              >
+                <MessageSquarePlus size={15} />
+              </button>
+              <button
+                type="button"
+                title="删除当前对话"
+                aria-label="删除当前对话"
+                disabled={!activeSessionId || messageSending || sessionDeleting}
+                onClick={() => void handleDeleteSession()}
+              >
+                <Trash2 size={15} />
+              </button>
+              <span className={`run-state run-state--${run?.status ?? "idle"}`}>
+                {run ? runStatusText : messageSending ? "处理中" : "待命"}
               </span>
             </div>
-            {run ? (
-              runBrief && (
-                <SingleRunConversation
-                  brief={runBrief}
-                  run={run}
-                  runError={runError}
-                  changes={changes}
-                  reviewAction={reviewAction}
-                  reviewError={reviewError}
-                  onHighlightSources={highlightSources}
-                  onOpenRelatedFile={(path) => void openRelatedFile(path)}
-                  onAccept={() => void handleAccept()}
-                  onDiscard={() => void handleDiscard()}
-                />
-              )
-            ) : !brief ? (
-              <div className="run-empty">
-                <span className="run-empty-icon"><CircleDot size={18} /></span>
-                <strong>{compileError || "尚未生成 Intent Brief"}</strong>
-                <p>便签可以零散、孤立或互相矛盾。点击“整理意图”查看结构化结果。</p>
-                {compileState === "failed" && (
-                  <button
-                    className="fallback-button"
-                    type="button"
-                    disabled={connection !== "connected" || isRunning}
-                    onClick={() => void handleCompile("local")}
-                  >
-                    <RotateCcw size={13} />使用本地规则整理
-                  </button>
-                )}
-                {runError && <p className="inline-error">{runError}</p>}
-              </div>
-            ) : (
-              <div className="brief-content">
-                <span className="eyebrow">INTENT BRIEF</span>
-                {compilerNotice && <p className="compiler-notice">{compilerNotice}</p>}
-                <h2>{brief.title}</h2>
-                <p className="brief-goal">{brief.goal}</p>
-                <div className="brief-section">
-                  <span className="brief-section__title">需求 · {brief.requirements.length}</span>
-                  {brief.requirements.map((requirement) => (
-                    <button className="requirement-card" key={requirement.id} type="button" onClick={() => highlightSources(requirement.source_ids)}>
-                      <span className="requirement-card__id">{requirement.id}</span>
-                      <strong>{requirement.description}</strong>
-                      {requirement.acceptance_criteria.map((criterion) => (
-                        <small key={criterion}><Check size={11} /> {criterion}</small>
-                      ))}
-                      <em>点击定位 {requirement.source_ids.length} 张来源便签</em>
-                    </button>
-                  ))}
-                </div>
-                {brief.constraints.length > 0 && (
-                  <div className="brief-section">
-                    <span className="brief-section__title">约束</span>
-                    <ul>{brief.constraints.map((constraint) => <li key={constraint}>{constraint}</li>)}</ul>
-                  </div>
-                )}
-              </div>
-            )}
+            <div className="conversation-scroll">
+              <SessionConversation
+                messages={sessionMessages}
+                runs={sessionRuns}
+                selectedRunId={run?.id ?? null}
+                selectedRunDetail={selectedRunDetail}
+                respondingMode={messageSending ? conversationMode : null}
+                onSelectRun={(selectedRun) => void selectSessionRun(selectedRun)}
+              />
+              {run && !run.session_id && selectedRunDetail}
+            </div>
+            <ConversationComposer
+              value={messageDraft}
+              mode={conversationMode}
+              attachCanvas={attachCanvas}
+              sending={messageSending}
+              agentBlocked={pendingReviewRun !== null}
+              agentBlockReason={agentBlockReason}
+              error={messageError}
+              onChange={setMessageDraft}
+              onModeChange={setConversationMode}
+              onAttachCanvasChange={setAttachCanvas}
+              onSubmit={() => void handleSendMessage()}
+            />
           </aside>
         </div>
       </div>
@@ -901,7 +1061,7 @@ export function App() {
         </span>
         <span className="statusbar-divider" />
         <span>审查：{reviewStatusText}</span>
-        <span className="statusbar-spacer" /><span>v0.5.0 · review control</span>
+        <span className="statusbar-spacer" /><span>v0.6.0 · conversation sessions</span>
       </footer>
     </main>
   );

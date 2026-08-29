@@ -2,7 +2,7 @@ import json
 from typing import Any
 
 from openai import AsyncOpenAI
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.agent.models import IntentBrief, IntentRequirement
 from app.intent.models import CanvasNote, IntentCanvas
@@ -10,6 +10,11 @@ from app.intent.models import CanvasNote, IntentCanvas
 
 class IntentCompileError(RuntimeError):
     """Raised when the model cannot produce a valid, traceable IntentBrief."""
+
+
+class IntentRequestDecision(BaseModel):
+    brief: IntentBrief | None = None
+    response: str | None = None
 
 
 class AIIntentCompiler:
@@ -32,7 +37,12 @@ class AIIntentCompiler:
             max_retries=0,
         )
 
-    async def compile(self, canvas: IntentCanvas) -> IntentBrief:
+    async def compile(
+        self,
+        canvas: IntentCanvas,
+        *,
+        project_context: str = "",
+    ) -> IntentBrief:
         validate_canvas_input(canvas)
         validation_feedback = ""
         for attempt in range(2):
@@ -44,7 +54,11 @@ class AIIntentCompiler:
                     input=[
                         {
                             "role": "user",
-                            "content": self._model_input(canvas, validation_feedback),
+                            "content": self._model_input(
+                                canvas,
+                                validation_feedback,
+                                project_context,
+                            ),
                         }
                     ],
                 )
@@ -62,16 +76,115 @@ class AIIntentCompiler:
 
         raise AssertionError("Intent compiler retry loop ended unexpectedly")
 
+    async def compile_agent_request(
+        self,
+        canvas: IntentCanvas,
+        primary_source_id: str,
+        *,
+        project_context: str = "",
+    ) -> IntentRequestDecision:
+        return await self._compile_routed_request(
+            canvas,
+            primary_source_id,
+            project_context=project_context,
+            instructions=AGENT_REQUEST_INSTRUCTIONS,
+        )
+
+    async def compile_plan_request(
+        self,
+        canvas: IntentCanvas,
+        primary_source_id: str,
+        *,
+        project_context: str = "",
+    ) -> IntentRequestDecision:
+        return await self._compile_routed_request(
+            canvas,
+            primary_source_id,
+            project_context=project_context,
+            instructions=PLAN_REQUEST_INSTRUCTIONS,
+        )
+
+    async def _compile_routed_request(
+        self,
+        canvas: IntentCanvas,
+        primary_source_id: str,
+        *,
+        project_context: str,
+        instructions: str,
+    ) -> IntentRequestDecision:
+        validate_canvas_input(canvas)
+        validation_feedback = ""
+        for attempt in range(2):
+            try:
+                response = await self.client.responses.create(
+                    model=self.model,
+                    instructions=instructions,
+                    tools=[INTENT_BRIEF_TOOL, RESPOND_TO_USER_TOOL],
+                    input=[
+                        {
+                            "role": "user",
+                            "content": self._agent_request_input(
+                                canvas,
+                                primary_source_id,
+                                validation_feedback,
+                                project_context,
+                            ),
+                        }
+                    ],
+                )
+            except Exception as error:
+                raise IntentCompileError(f"模型服务调用失败：{error}") from error
+
+            try:
+                decision = _parse_request_decision(response)
+                if decision.brief is not None:
+                    validate_compiled_brief(canvas, decision.brief)
+                return decision
+            except IntentCompileError as error:
+                if attempt == 1:
+                    raise IntentCompileError(f"模型连续两次返回无效结果：{error}") from error
+                validation_feedback = str(error)
+
+        raise AssertionError("Intent request compiler retry loop ended unexpectedly")
+
     @staticmethod
-    def _model_input(canvas: IntentCanvas, validation_feedback: str) -> str:
+    def _model_input(
+        canvas: IntentCanvas,
+        validation_feedback: str,
+        project_context: str,
+    ) -> str:
         content = (
             "Organize this free-form canvas into an IntentBrief.\n"
             + canvas.model_dump_json(indent=2)
         )
+        if project_context:
+            content += "\n\nRead-only snapshot of the current project:\n" + project_context
         if validation_feedback:
             content += (
                 "\n\nYour previous result failed validation. Call submit_intent_brief again with "
                 f"a corrected result. Validation error: {validation_feedback}"
+            )
+        return content
+
+    @staticmethod
+    def _agent_request_input(
+        canvas: IntentCanvas,
+        primary_source_id: str,
+        validation_feedback: str,
+        project_context: str,
+    ) -> str:
+        content = (
+            f'The latest user message is the note with id "{primary_source_id}". '
+            "Treat it as the primary instruction. The rest of the canvas and prior conversation "
+            "are optional context only.\n"
+            + canvas.model_dump_json(indent=2)
+        )
+        if project_context:
+            content += "\n\nRead-only snapshot of the current project:\n" + project_context
+        if validation_feedback:
+            content += (
+                "\n\nYour previous result failed validation. Choose one tool again with a "
+                f"corrected result. Validation error: {validation_feedback}"
             )
         return content
 
@@ -175,6 +288,27 @@ def _parse_model_brief(response: Any) -> IntentBrief:
     return brief
 
 
+def _parse_request_decision(response: Any) -> IntentRequestDecision:
+    function_calls = [item for item in response.output if item.type == "function_call"]
+    if len(function_calls) != 1:
+        raise IntentCompileError("模型必须且只能选择一种 Agent 响应")
+
+    function_call = function_calls[0]
+    if function_call.name == "submit_intent_brief":
+        return IntentRequestDecision(brief=_parse_model_brief(response))
+    if function_call.name != "respond_to_user":
+        raise IntentCompileError(f"模型调用了未知的 Agent 响应工具：{function_call.name}")
+
+    try:
+        payload = json.loads(function_call.arguments)
+        message = str(payload["message"]).strip()
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise IntentCompileError("模型返回的非执行回复无法解析") from error
+    if not message:
+        raise IntentCompileError("模型返回的非执行回复不能为空")
+    return IntentRequestDecision(response=message)
+
+
 def validate_canvas_input(canvas: IntentCanvas) -> None:
     notes = [note for note in canvas.notes if note.text.strip()]
     if not notes and not canvas.supplemental_text.strip():
@@ -243,6 +377,44 @@ Rules:
 - source_ids may only contain IDs copied exactly from non-blank input notes. If notes exist, every
   requirement must reference at least one note. For supplemental-text-only input, use an empty list.
 - Return concise user-facing Chinese text when the input is Chinese.
+- Use the supplied project snapshot to make the plan consistent with existing code, but do not
+  claim to have changed files or run commands.
+"""
+
+
+AGENT_REQUEST_INSTRUCTIONS = """You route the latest Agent-mode message inside IntentFlow.
+The latest user message is the primary instruction. Canvas notes, earlier conversation, and the
+read-only project snapshot are supporting context and must never trigger execution by themselves.
+
+Choose exactly one tool:
+- Call submit_intent_brief only when the latest message clearly asks to inspect, change, test, or
+  otherwise act on the coding project. If the message explicitly asks to implement the attached
+  Canvas, you may use the Canvas as task requirements.
+- Call respond_to_user for greetings, thanks, small talk, unclear fragments, or questions that
+  do not clearly request project action. You may answer questions about the supplied project
+  snapshot. Briefly reply in the user's language and ask for a concrete task when appropriate.
+  Do not claim to have changed project files or run commands.
+
+When submitting an IntentBrief, follow the same traceability rules as the intent compiler: preserve
+meaningful constraints, use consecutive requirement IDs, provide observable acceptance criteria,
+and only cite source IDs present in the input. Return concise Chinese text for Chinese input.
+"""
+
+
+PLAN_REQUEST_INSTRUCTIONS = """You route the latest Plan-mode message inside IntentFlow.
+The latest user message is the primary instruction. Canvas notes, earlier conversation, and the
+read-only project snapshot are supporting context and must not turn a question into a plan.
+
+Choose exactly one tool:
+- Call submit_intent_brief only when the latest message clearly asks for an implementation plan,
+  design proposal, task breakdown, or changes to the coding project.
+- Call respond_to_user for factual questions about the project, explanations, greetings, thanks,
+  small talk, or unclear fragments. Answer directly and naturally in the user's language. Do not
+  manufacture requirements or acceptance criteria for a simple question.
+
+When submitting an IntentBrief, preserve meaningful constraints, use consecutive requirement IDs,
+provide observable acceptance criteria, and only cite source IDs present in the input. Never claim
+to have changed files or run commands.
 """
 
 
@@ -283,6 +455,20 @@ INTENT_BRIEF_TOOL: dict[str, object] = {
             "constraints": {"type": "array", "items": {"type": "string"}},
         },
         "required": ["title", "goal", "requirements", "constraints"],
+        "additionalProperties": False,
+    },
+    "strict": False,
+}
+
+
+RESPOND_TO_USER_TOOL: dict[str, object] = {
+    "type": "function",
+    "name": "respond_to_user",
+    "description": "Reply naturally when the latest message does not require a structured task.",
+    "parameters": {
+        "type": "object",
+        "properties": {"message": {"type": "string"}},
+        "required": ["message"],
         "additionalProperties": False,
     },
     "strict": False,

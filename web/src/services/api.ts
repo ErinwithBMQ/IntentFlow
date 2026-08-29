@@ -89,8 +89,54 @@ export type RunSnapshot = {
   status: RunStatus;
   review_status: ReviewStatus;
   workspace_relative_path: string;
+  session_id: string | null;
+  trigger_message_id: string | null;
+  intent: IntentBrief | null;
   events: RunEvent[];
   report: RunReport | null;
+};
+
+export type ConversationMode = "ask" | "plan" | "agent";
+
+export type SessionRecord = {
+  id: string;
+  project_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CanvasSnapshotRecord = {
+  id: string;
+  session_id: string;
+  canvas: IntentCanvas;
+  created_at: string;
+};
+
+export type ConversationMessage = {
+  id: string;
+  session_id: string;
+  role: "user" | "assistant";
+  mode: ConversationMode;
+  content: string;
+  canvas_snapshot_id: string | null;
+  run_id: string | null;
+  intent: IntentBrief | null;
+  created_at: string;
+  sequence: number;
+};
+
+export type SessionDetail = {
+  session: SessionRecord;
+  messages: ConversationMessage[];
+  canvas_snapshots: CanvasSnapshotRecord[];
+  runs: RunSnapshot[];
+};
+
+export type SendSessionMessageResponse = {
+  user_message: ConversationMessage;
+  assistant_message: ConversationMessage;
+  run: RunSnapshot | null;
 };
 
 export type WorkspaceScope = "project" | "run";
@@ -154,6 +200,40 @@ export function getHealth(): Promise<HealthResponse> {
 
 export function getProject(): Promise<ProjectResponse> {
   return requestJson<ProjectResponse>("/api/project");
+}
+
+export function listSessions(): Promise<SessionRecord[]> {
+  return requestJson<SessionRecord[]>("/api/sessions");
+}
+
+export function createSession(title = "新对话"): Promise<SessionRecord> {
+  return postJson<SessionRecord>("/api/sessions", { title });
+}
+
+export function getSession(sessionId: string): Promise<SessionDetail> {
+  return requestJson<SessionDetail>(`/api/sessions/${sessionId}`);
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  const response = await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? `删除对话失败：${response.status}`);
+  }
+}
+
+export function sendSessionMessage(
+  sessionId: string,
+  content: string,
+  mode: ConversationMode,
+  canvas: IntentCanvas | null,
+): Promise<SendSessionMessageResponse> {
+  return postJson<SendSessionMessageResponse>(`/api/sessions/${sessionId}/messages`, {
+    content,
+    mode,
+    attach_canvas: canvas !== null,
+    canvas,
+  });
 }
 
 export function getProjectTree(): Promise<WorkspaceTree> {

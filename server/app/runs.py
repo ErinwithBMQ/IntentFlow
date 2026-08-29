@@ -27,6 +27,9 @@ class RunSnapshot(BaseModel):
     status: Literal["running", "completed", "failed", "stopped"]
     review_status: ReviewStatus
     workspace_relative_path: str
+    session_id: str | None = None
+    trigger_message_id: str | None = None
+    intent: IntentBrief | None = None
     events: list[RunEvent]
     report: RunReport | None = None
 
@@ -38,11 +41,20 @@ class RunRecord:
         workspace: Path,
         baseline: Path,
         relative_path: str,
+        *,
+        session_id: str | None = None,
+        trigger_message_id: str | None = None,
+        intent: IntentBrief | None = None,
+        snapshot_sink: Callable[[RunSnapshot], None] | None = None,
     ) -> None:
         self.id = run_id
         self.workspace = workspace
         self.baseline = baseline
         self.relative_path = relative_path
+        self.session_id = session_id
+        self.trigger_message_id = trigger_message_id
+        self.intent = intent
+        self.snapshot_sink = snapshot_sink
         self.status: Literal["running", "completed", "failed", "stopped"] = "running"
         self.review_status: ReviewStatus = "pending"
         self.events: list[RunEvent] = []
@@ -59,6 +71,7 @@ class RunRecord:
         async with self.changed:
             self.events.append(event)
             self.changed.notify_all()
+        self.persist()
 
     async def finish(self, result: RunResult) -> None:
         async with self.changed:
@@ -73,6 +86,11 @@ class RunRecord:
                 self.events.append(self.pending_finished_event)
                 self.pending_finished_event = None
             self.changed.notify_all()
+        self.persist()
+
+    def persist(self) -> None:
+        if self.snapshot_sink is not None:
+            self.snapshot_sink(self.snapshot())
 
     def snapshot(self) -> RunSnapshot:
         return RunSnapshot(
@@ -80,6 +98,9 @@ class RunRecord:
             status=self.status,
             review_status=self.review_status,
             workspace_relative_path=self.relative_path,
+            session_id=self.session_id,
+            trigger_message_id=self.trigger_message_id,
+            intent=self.intent,
             events=list(self.events),
             report=self.report,
         )
@@ -94,6 +115,7 @@ class RunManager:
         command_factory: Callable[[Path], dict[str, tuple[str, ...]]] | None = None,
         max_steps: int = DEFAULT_MAX_STEPS,
         workspace_service: WorkspaceService | None = None,
+        snapshot_sink: Callable[[RunSnapshot], None] | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
@@ -103,8 +125,15 @@ class RunManager:
         self.command_factory = command_factory
         self.max_steps = max_steps
         self.workspace_service = workspace_service or WorkspaceService()
+        self.snapshot_sink = snapshot_sink
 
-    def start(self, intent: IntentBrief) -> RunSnapshot:
+    def start(
+        self,
+        intent: IntentBrief,
+        *,
+        session_id: str | None = None,
+        trigger_message_id: str | None = None,
+    ) -> RunSnapshot:
         if any(record.status == "running" for record in self.records.values()):
             raise RuntimeError("已有 Agent 任务正在运行，请等待完成或先停止它")
 
@@ -130,8 +159,18 @@ class RunManager:
             shutil.rmtree(run_root, ignore_errors=True)
             raise
 
-        record = RunRecord(run_id, workspace, baseline, relative_path)
+        record = RunRecord(
+            run_id,
+            workspace,
+            baseline,
+            relative_path,
+            session_id=session_id,
+            trigger_message_id=trigger_message_id,
+            intent=intent,
+            snapshot_sink=self.snapshot_sink,
+        )
         self.records[run_id] = record
+        record.persist()
         registry = ToolRegistry()
         model_client = (
             self.model_client_factory(registry)
@@ -163,6 +202,39 @@ class RunManager:
         record.task = asyncio.create_task(self._execute(record, runner, intent))
         return record.snapshot()
 
+    def restore(self, snapshot: RunSnapshot) -> RunSnapshot:
+        workspace = self.repository_root / Path(snapshot.workspace_relative_path)
+        baseline = workspace.parent / "baseline" / workspace.name
+        record = RunRecord(
+            snapshot.id,
+            workspace,
+            baseline,
+            snapshot.workspace_relative_path,
+            session_id=snapshot.session_id,
+            trigger_message_id=snapshot.trigger_message_id,
+            intent=snapshot.intent,
+            snapshot_sink=self.snapshot_sink,
+        )
+        record.status = snapshot.status
+        record.review_status = snapshot.review_status
+        record.events = list(snapshot.events)
+        record.report = snapshot.report
+        if record.status == "running":
+            record.status = "stopped"
+            record.events.append(
+                RunEvent(
+                    sequence=len(record.events) + 1,
+                    kind="run_finished",
+                    phase="finished",
+                    status="stopped",
+                    action="服务重启，先前运行已停止",
+                    reason="运行任务不能跨服务进程继续执行",
+                )
+            )
+        self.records[record.id] = record
+        record.persist()
+        return record.snapshot()
+
     def get(self, run_id: str) -> RunRecord | None:
         return self.records.get(run_id)
 
@@ -186,6 +258,7 @@ class RunManager:
         project = self.repository_root / "examples" / "todo-demo"
         self.workspace_service.apply_changes(record.baseline, record.workspace, project)
         record.review_status = "accepted"
+        record.persist()
         return record.snapshot()
 
     def discard(self, run_id: str) -> RunSnapshot:
@@ -198,7 +271,28 @@ class RunManager:
             raise RunReviewError("运行结束后才能放弃修改")
 
         record.review_status = "discarded"
+        record.persist()
         return record.snapshot()
+
+    def delete(self, run_id: str, workspace_relative_path: str | None = None) -> None:
+        record = self.records.get(run_id)
+        if record is not None and record.status == "running":
+            raise RunReviewError("运行中的任务不能随对话删除，请先停止运行")
+
+        relative_path = record.relative_path if record is not None else workspace_relative_path
+        if relative_path:
+            runs_root = (self.repository_root / "runtime-data" / "runs").resolve()
+            run_root = (self.repository_root / Path(relative_path)).resolve().parent
+            try:
+                relative_run_root = run_root.relative_to(runs_root)
+            except ValueError as error:
+                raise RunReviewError("运行工作区不在受控目录内，已阻止删除") from error
+            if len(relative_run_root.parts) != 1:
+                raise RunReviewError("运行工作区路径无效，已阻止删除")
+            if run_root.exists():
+                shutil.rmtree(run_root)
+
+        self.records.pop(run_id, None)
 
     async def stream(self, run_id: str) -> AsyncIterator[str]:
         record = self.records.get(run_id)

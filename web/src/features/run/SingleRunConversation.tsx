@@ -31,6 +31,7 @@ type SingleRunConversationProps = {
   onOpenRelatedFile: (path: string) => void;
   onAccept: () => void;
   onDiscard: () => void;
+  showIntentContext?: boolean;
 };
 
 const requirementStatusText = {
@@ -57,50 +58,59 @@ export function SingleRunConversation({
   onOpenRelatedFile,
   onAccept,
   onDiscard,
+  showIntentContext = true,
 }: SingleRunConversationProps) {
   const activities = useMemo(() => buildConversationActivities(run.events), [run.events]);
+  const activeAction = [...activities]
+    .reverse()
+    .flatMap((activity) => [...activity.actions].reverse())
+    .find((action) => action.status === "running");
 
   return (
-    <div className="conversation-content">
-      <div className="conversation-run-meta">
-        <span>单次运行 · {run.id}</span>
-        <small><FileCode2 size={11} />{run.workspace_relative_path}</small>
-      </div>
-
-      <section className="conversation-message conversation-message--user">
-        <div className="conversation-avatar"><UserRound size={14} /></div>
-        <div className="conversation-bubble">
-          <span className="conversation-speaker">本轮目标</span>
-          <strong>{brief.title}</strong>
-          <p>{brief.goal}</p>
-          <small>{brief.requirements.length} 项需求 · {brief.constraints.length} 项约束</small>
-        </div>
-      </section>
-
-      <section className="conversation-message conversation-message--agent">
-        <div className="conversation-avatar"><Sparkles size={14} /></div>
-        <div className="conversation-bubble">
-          <span className="conversation-speaker">Agent 理解</span>
-          <strong>我会按本轮冻结的 Intent Brief 实现并验证</strong>
-          <div className="conversation-intent-list">
-            {brief.requirements.map((requirement) => (
-              <button
-                type="button"
-                key={requirement.id}
-                onClick={() => onHighlightSources(requirement.source_ids)}
-              >
-                <span>{requirement.id}</span>{requirement.description}
-              </button>
-            ))}
+    <div className={`conversation-content ${showIntentContext ? "" : "conversation-content--embedded"}`}>
+      {showIntentContext && (
+        <>
+          <div className="conversation-run-meta">
+            <span>单次运行 · {run.id}</span>
+            <small><FileCode2 size={11} />{run.workspace_relative_path}</small>
           </div>
-          {brief.constraints.length > 0 && (
-            <details className="conversation-details">
-              <summary>查看 {brief.constraints.length} 项约束</summary>
-              <ul>{brief.constraints.map((constraint) => <li key={constraint}>{constraint}</li>)}</ul>
-            </details>
-          )}
-        </div>
-      </section>
+
+          <section className="conversation-message conversation-message--user">
+            <div className="conversation-avatar"><UserRound size={14} /></div>
+            <div className="conversation-bubble">
+              <span className="conversation-speaker">本轮目标</span>
+              <strong>{brief.title}</strong>
+              <p>{brief.goal}</p>
+              <small>{brief.requirements.length} 项需求 · {brief.constraints.length} 项约束</small>
+            </div>
+          </section>
+
+          <section className="conversation-message conversation-message--agent">
+            <div className="conversation-avatar"><Sparkles size={14} /></div>
+            <div className="conversation-bubble">
+              <span className="conversation-speaker">Agent 理解</span>
+              <strong>我会按本轮冻结的 Intent Brief 实现并验证</strong>
+              <div className="conversation-intent-list">
+                {brief.requirements.map((requirement) => (
+                  <button
+                    type="button"
+                    key={requirement.id}
+                    onClick={() => onHighlightSources(requirement.source_ids)}
+                  >
+                    <span>{requirement.id}</span>{requirement.description}
+                  </button>
+                ))}
+              </div>
+              {brief.constraints.length > 0 && (
+                <details className="conversation-details">
+                  <summary>查看 {brief.constraints.length} 项约束</summary>
+                  <ul>{brief.constraints.map((constraint) => <li key={constraint}>{constraint}</li>)}</ul>
+                </details>
+              )}
+            </div>
+          </section>
+        </>
+      )}
 
       {runError && <p className="run-error"><X size={13} />{runError}</p>}
 
@@ -108,11 +118,7 @@ export function SingleRunConversation({
         <div className="conversation-avatar"><Sparkles size={14} /></div>
         <div className="conversation-bubble conversation-bubble--progress">
           <span className="conversation-speaker">Agent 进展</span>
-          {activities.length === 0 ? (
-            <div className="conversation-waiting">
-              <LoaderCircle className="spin" size={14} />正在等待第一个动作…
-            </div>
-          ) : (
+          {activities.length > 0 && (
             <div className="conversation-activities">
               {activities.map((activity) => (
                 <article
@@ -149,6 +155,19 @@ export function SingleRunConversation({
                   </div>
                 </article>
               ))}
+            </div>
+          )}
+          {run.status === "running" && (
+            <div className="conversation-live-status" role="status" aria-live="polite">
+              <LoaderCircle className="spin" size={15} />
+              <div>
+                <strong>Agent 运行中</strong>
+                <span>
+                  {activeAction
+                    ? `正在执行：${activeAction.action || activeAction.toolName || "工具调用"}`
+                    : "正在思考下一步…"}
+                </span>
+              </div>
             </div>
           )}
         </div>
