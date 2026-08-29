@@ -10,6 +10,7 @@ from app.agent.tools import ToolContext, ToolRegistry
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 TODO_DEMO_ROOT = REPOSITORY_ROOT / "examples" / "todo-demo"
+TODO_DEMO_FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "todo-demo"
 
 
 def tool_call(call_id: str, name: str, **arguments: object) -> ToolCall:
@@ -29,6 +30,7 @@ async def test_agent_implements_and_verifies_todo_add_flow(tmp_path) -> None:
         workspace,
         ignore=shutil.ignore_patterns("node_modules", "dist"),
     )
+    shutil.copytree(TODO_DEMO_FIXTURE_ROOT, workspace, dirs_exist_ok=True)
 
     old_import = 'import { countOpenTasks, createTaskElement, initialTasks } from "./tasks";'
     new_import = (

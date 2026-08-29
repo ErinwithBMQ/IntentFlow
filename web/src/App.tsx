@@ -29,7 +29,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   TODO_EXAMPLE_EDGES,
   TODO_EXAMPLE_NODES,
+  edgeChangesInvalidateIntent,
   isStoredCanvas,
+  nodeChangesInvalidateIntent,
   toIntentCanvas,
   type NoteNode as NoteNodeType,
 } from "./features/canvas/canvasState";
@@ -44,8 +46,10 @@ import {
   type WorkspaceTab,
 } from "./features/workspace/workspaceState";
 import {
+  acceptRun,
   compileIntent,
   createRun,
+  discardRun,
   getHealth,
   getProject,
   getProjectFile,
@@ -72,8 +76,11 @@ type ConnectionState = "checking" | "connected" | "failed";
 type CompileState = "idle" | "compiling" | "completed" | "failed";
 type CompilerKind = "ai" | "local";
 
-const phases = ["表达想法", "整理意图", "修改代码", "运行验证"];
+const phases = ["表达想法", "整理意图", "修改代码", "运行验证", "审查修改"];
 const STORAGE_KEY = "intentflow.canvas.v1";
+const CONVERSATION_WIDTH_KEY = "intentflow.conversation-width.v1";
+const MIN_CONVERSATION_WIDTH = 300;
+const MAX_CONVERSATION_WIDTH = 640;
 const nodeTypes = { note: NoteNode };
 
 function loadCanvas() {
@@ -88,6 +95,15 @@ function loadCanvas() {
     edges: TODO_EXAMPLE_EDGES,
     supplementalText: "这个功能要适合两分钟内现场演示。",
   };
+}
+
+function clampConversationWidth(width: number): number {
+  return Math.min(MAX_CONVERSATION_WIDTH, Math.max(MIN_CONVERSATION_WIDTH, width));
+}
+
+function loadConversationWidth(): number {
+  const stored = Number(localStorage.getItem(CONVERSATION_WIDTH_KEY));
+  return Number.isFinite(stored) && stored > 0 ? clampConversationWidth(stored) : 380;
 }
 
 export function App() {
@@ -106,6 +122,8 @@ export function App() {
   const [run, setRun] = useState<RunSnapshot | null>(null);
   const [runBrief, setRunBrief] = useState<IntentBrief | null>(null);
   const [runError, setRunError] = useState("");
+  const [reviewAction, setReviewAction] = useState<"accept" | "discard" | null>(null);
+  const [reviewError, setReviewError] = useState("");
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("canvas");
   const [projectTree, setProjectTree] = useState<WorkspaceTree | null>(null);
   const [runTree, setRunTree] = useState<WorkspaceTree | null>(null);
@@ -117,6 +135,8 @@ export function App() {
   const [activeDiff, setActiveDiff] = useState<FileDiff | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState("");
+  const [conversationWidth, setConversationWidth] = useState(loadConversationWidth);
+  const [isResizingConversation, setIsResizingConversation] = useState(false);
   const closeRunStream = useRef<(() => void) | null>(null);
   const diffRequestSequence = useRef(0);
   const workspaceTabRef = useRef<WorkspaceTab>("canvas");
@@ -152,6 +172,35 @@ export function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ nodes, edges, supplementalText }));
   }, [edges, nodes, supplementalText]);
+
+  useEffect(() => {
+    localStorage.setItem(CONVERSATION_WIDTH_KEY, String(conversationWidth));
+  }, [conversationWidth]);
+
+  useEffect(() => {
+    if (!isResizingConversation) return;
+
+    function handlePointerMove(event: PointerEvent) {
+      setConversationWidth(clampConversationWidth(window.innerWidth - event.clientX));
+    }
+
+    function handlePointerUp() {
+      setIsResizingConversation(false);
+    }
+
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp, { once: true });
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [isResizingConversation]);
 
   useEffect(() => () => closeRunStream.current?.(), []);
 
@@ -209,7 +258,7 @@ export function App() {
   const handleNodesChange = useCallback(
     (changes: NodeChange<NoteNodeType>[]) => {
       onNodesChange(changes);
-      if (changes.some((change) => change.type === "remove" || change.type === "position")) {
+      if (nodeChangesInvalidateIntent(changes)) {
         resetCompilation();
       }
     },
@@ -219,7 +268,7 @@ export function App() {
   const handleEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
       onEdgesChange(changes);
-      if (changes.some((change) => change.type === "remove")) {
+      if (edgeChangesInvalidateIntent(changes)) {
         resetCompilation();
       }
     },
@@ -256,6 +305,8 @@ export function App() {
     setActiveDiff(null);
     setDiffError("");
     setDiffLoading(false);
+    setReviewAction(null);
+    setReviewError("");
     setOpenFiles((currentFiles) => currentFiles.filter((file) => file.scope === "project"));
     if (activeFileKey?.startsWith("run:")) {
       setActiveFileKey(openFiles.find((file) => file.scope === "project")?.key ?? null);
@@ -303,7 +354,7 @@ export function App() {
     try {
       setRunTree(await getRunTree(snapshot.id));
     } catch (error) {
-      setWorkspaceError(errorMessage(error, "无法读取运行副本"));
+      setWorkspaceError(errorMessage(error, "无法读取 Agent 修改版本"));
     }
     if (snapshot.status === "running") return;
     try {
@@ -365,6 +416,68 @@ export function App() {
     }
   }
 
+  async function handleAccept() {
+    if (!run || run.status !== "completed" || run.review_status !== "pending" || !changes) {
+      return;
+    }
+    const confirmed = window.confirm(
+      `接受本次运行的 ${changes.changed_files} 个文件变更并写入项目当前版本吗？`,
+    );
+    if (!confirmed) return;
+
+    setReviewAction("accept");
+    setReviewError("");
+    try {
+      const updated = await acceptRun(run.id);
+      setRun(updated);
+      setProjectTree(await getProjectTree());
+      await refreshOpenProjectFiles();
+    } catch (error) {
+      setReviewError(errorMessage(error, "接受修改失败"));
+    } finally {
+      setReviewAction(null);
+    }
+  }
+
+  async function handleDiscard() {
+    if (!run || run.status === "running" || run.review_status !== "pending") return;
+    const confirmed = window.confirm(
+      "放弃本次修改吗？项目当前版本不会变化，Agent 修改版本和 Diff 会保留。",
+    );
+    if (!confirmed) return;
+
+    setReviewAction("discard");
+    setReviewError("");
+    try {
+      setRun(await discardRun(run.id));
+    } catch (error) {
+      setReviewError(errorMessage(error, "放弃修改失败"));
+    } finally {
+      setReviewAction(null);
+    }
+  }
+
+  async function refreshOpenProjectFiles() {
+    const projectFiles = openFiles.filter((file) => file.scope === "project");
+    const refreshedFiles = await Promise.all(projectFiles.map(async (openFile) => {
+      try {
+        const file = await getProjectFile(openFile.path);
+        return { ...openFile, state: "ready" as const, file, error: "" };
+      } catch (error) {
+        return {
+          ...openFile,
+          state: "error" as const,
+          file: null,
+          error: errorMessage(error, "文件读取失败"),
+        };
+      }
+    }));
+    const refreshedByKey = new Map(refreshedFiles.map((file) => [file.key, file]));
+    setOpenFiles((currentFiles) => currentFiles.map(
+      (file) => refreshedByKey.get(file.key) ?? file,
+    ));
+  }
+
   function highlightSources(sourceIds: string[]) {
     setNodes((currentNodes) =>
       currentNodes.map((node) => ({ ...node, selected: sourceIds.includes(node.id) })),
@@ -399,7 +512,7 @@ export function App() {
         : run
           ? await getRunFile(run.id, path)
           : null;
-      if (!file) throw new Error("当前没有可读取的运行副本");
+      if (!file) throw new Error("当前没有可读取的 Agent 修改版本");
       setOpenFiles((currentFiles) => currentFiles.map((item) => (
         item.key === key ? { ...item, state: "ready", file, error: "" } : item
       )));
@@ -490,7 +603,7 @@ export function App() {
     failed: "后端连接失败",
   }[connection];
   const isRunning = run?.status === "running";
-  const activePhaseCount = run ? 4 : brief ? 2 : 1;
+  const activePhaseCount = run ? (run.status === "running" ? 4 : 5) : brief ? 2 : 1;
   const runStatusText = run
     ? { running: "运行中", completed: "已完成", failed: "失败", stopped: "已停止" }[run.status]
     : "待运行";
@@ -500,11 +613,14 @@ export function App() {
     : workspaceTab === "diff"
       ? "本次运行 Diff"
       : activeOpenFile
-        ? `${activeOpenFile.scope === "project" ? "原始项目" : "运行副本"} / ${activeOpenFile.path}`
+        ? `${activeOpenFile.scope === "project" ? "项目当前版本" : "Agent 修改版本"} / ${activeOpenFile.path}`
         : "代码查看";
   const verifiedRequirements = run?.report?.requirement_results.filter(
     (result) => result.status === "verified",
   ).length ?? 0;
+  const reviewStatusText = run
+    ? { pending: "待审查", accepted: "已接受", discarded: "已放弃" }[run.review_status]
+    : "待运行";
 
   return (
     <main className="workspace-shell">
@@ -555,7 +671,10 @@ export function App() {
         ))}
       </section>
 
-      <div className="workspace-grid">
+      <div
+        className="workspace-grid"
+        style={{ gridTemplateColumns: `240px minmax(520px, 1fr) ${conversationWidth}px` }}
+      >
         <ProjectExplorer
           projectTree={projectTree}
           runTree={runTree}
@@ -662,76 +781,103 @@ export function App() {
           </div>
         </section>
 
-        <aside className="run-panel intent-panel">
-          <div className="panel-heading">
-            <span>{run ? "单轮协作记录" : "意图理解摘要"}</span>
-            <span className={`run-state run-state--${run?.status ?? compileState}`}>
-              {run
-                ? runStatusText
-                : compileState === "completed"
-                  ? compilerKind === "ai"
-                    ? "AI 已整理"
-                    : "本地降级"
-                  : compileState === "failed"
-                    ? "失败"
-                    : "待整理"}
-            </span>
-          </div>
-          {run ? (
-            runBrief && (
-              <SingleRunConversation
-                brief={runBrief}
-                run={run}
-                runError={runError}
-                onHighlightSources={highlightSources}
-                onOpenRelatedFile={(path) => void openRelatedFile(path)}
-              />
-            )
-          ) : !brief ? (
-            <div className="run-empty">
-              <span className="run-empty-icon"><CircleDot size={18} /></span>
-              <strong>{compileError || "尚未生成 Intent Brief"}</strong>
-              <p>便签可以零散、孤立或互相矛盾。点击“整理意图”查看结构化结果。</p>
-              {compileState === "failed" && (
-                <button
-                  className="fallback-button"
-                  type="button"
-                  disabled={connection !== "connected" || isRunning}
-                  onClick={() => void handleCompile("local")}
-                >
-                  <RotateCcw size={13} />使用本地规则整理
-                </button>
-              )}
-              {runError && <p className="inline-error">{runError}</p>}
+        <div className="conversation-panel-wrap">
+          <button
+            className="conversation-resizer"
+            type="button"
+            aria-label="调整对话区宽度"
+            title="拖动调整对话区宽度"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              setIsResizingConversation(true);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowLeft") {
+                event.preventDefault();
+                setConversationWidth((width) => clampConversationWidth(width + 20));
+              }
+              if (event.key === "ArrowRight") {
+                event.preventDefault();
+                setConversationWidth((width) => clampConversationWidth(width - 20));
+              }
+            }}
+          />
+          <aside className="run-panel intent-panel">
+            <div className="panel-heading">
+              <span>{run ? "单轮协作记录" : "意图理解摘要"}</span>
+              <span className={`run-state run-state--${run?.status ?? compileState}`}>
+                {run
+                  ? runStatusText
+                  : compileState === "completed"
+                    ? compilerKind === "ai"
+                      ? "AI 已整理"
+                      : "本地降级"
+                    : compileState === "failed"
+                      ? "失败"
+                      : "待整理"}
+              </span>
             </div>
-          ) : (
-            <div className="brief-content">
-              <span className="eyebrow">INTENT BRIEF</span>
-              {compilerNotice && <p className="compiler-notice">{compilerNotice}</p>}
-              <h2>{brief.title}</h2>
-              <p className="brief-goal">{brief.goal}</p>
-              <div className="brief-section">
-                <span className="brief-section__title">需求 · {brief.requirements.length}</span>
-                {brief.requirements.map((requirement) => (
-                  <button className="requirement-card" key={requirement.id} type="button" onClick={() => highlightSources(requirement.source_ids)}>
-                    <span className="requirement-card__id">{requirement.id}</span>
-                    <strong>{requirement.description}</strong>
-                    {requirement.acceptance_criteria.map((criterion) => (
-                      <small key={criterion}><Check size={11} /> {criterion}</small>
-                    ))}
-                    <em>点击定位 {requirement.source_ids.length} 张来源便签</em>
+            {run ? (
+              runBrief && (
+                <SingleRunConversation
+                  brief={runBrief}
+                  run={run}
+                  runError={runError}
+                  changes={changes}
+                  reviewAction={reviewAction}
+                  reviewError={reviewError}
+                  onHighlightSources={highlightSources}
+                  onOpenRelatedFile={(path) => void openRelatedFile(path)}
+                  onAccept={() => void handleAccept()}
+                  onDiscard={() => void handleDiscard()}
+                />
+              )
+            ) : !brief ? (
+              <div className="run-empty">
+                <span className="run-empty-icon"><CircleDot size={18} /></span>
+                <strong>{compileError || "尚未生成 Intent Brief"}</strong>
+                <p>便签可以零散、孤立或互相矛盾。点击“整理意图”查看结构化结果。</p>
+                {compileState === "failed" && (
+                  <button
+                    className="fallback-button"
+                    type="button"
+                    disabled={connection !== "connected" || isRunning}
+                    onClick={() => void handleCompile("local")}
+                  >
+                    <RotateCcw size={13} />使用本地规则整理
                   </button>
-                ))}
+                )}
+                {runError && <p className="inline-error">{runError}</p>}
               </div>
-              {brief.constraints.length > 0 && (
+            ) : (
+              <div className="brief-content">
+                <span className="eyebrow">INTENT BRIEF</span>
+                {compilerNotice && <p className="compiler-notice">{compilerNotice}</p>}
+                <h2>{brief.title}</h2>
+                <p className="brief-goal">{brief.goal}</p>
                 <div className="brief-section">
-                  <span className="brief-section__title">约束</span>
-                  <ul>{brief.constraints.map((constraint) => <li key={constraint}>{constraint}</li>)}</ul>
+                  <span className="brief-section__title">需求 · {brief.requirements.length}</span>
+                  {brief.requirements.map((requirement) => (
+                    <button className="requirement-card" key={requirement.id} type="button" onClick={() => highlightSources(requirement.source_ids)}>
+                      <span className="requirement-card__id">{requirement.id}</span>
+                      <strong>{requirement.description}</strong>
+                      {requirement.acceptance_criteria.map((criterion) => (
+                        <small key={criterion}><Check size={11} /> {criterion}</small>
+                      ))}
+                      <em>点击定位 {requirement.source_ids.length} 张来源便签</em>
+                    </button>
+                  ))}
                 </div>
-              )}
-            </div>
-          )}
-        </aside>
+                {brief.constraints.length > 0 && (
+                  <div className="brief-section">
+                    <span className="brief-section__title">约束</span>
+                    <ul>{brief.constraints.map((constraint) => <li key={constraint}>{constraint}</li>)}</ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </aside>
+        </div>
       </div>
 
       <footer className="statusbar">
@@ -753,7 +899,9 @@ export function App() {
             ? `${verifiedRequirements}/${run.report.requirement_results.length} 项已验证`
             : "待验证"}
         </span>
-        <span className="statusbar-spacer" /><span>v0.4.0 · workspace review</span>
+        <span className="statusbar-divider" />
+        <span>审查：{reviewStatusText}</span>
+        <span className="statusbar-spacer" /><span>v0.5.0 · review control</span>
       </footer>
     </main>
   );

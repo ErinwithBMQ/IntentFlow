@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { diffLineKind, relatedFileDestination, workspaceFileKey } from "./workspaceState";
+import {
+  diffLineKind,
+  languageFromPath,
+  relatedFileDestination,
+  workspaceFileKey,
+} from "./workspaceState";
 
 describe("workspace state helpers", () => {
   it("keeps project and run files separate", () => {
@@ -36,5 +41,11 @@ describe("workspace state helpers", () => {
     expect(diffLineKind("+new")).toBe("addition");
     expect(diffLineKind("-old")).toBe("deletion");
     expect(diffLineKind(" unchanged")).toBe("context");
+  });
+
+  it("infers the highlighting language from a file path", () => {
+    expect(languageFromPath("src/App.tsx")).toBe("typescript");
+    expect(languageFromPath("config/settings.yaml")).toBe("yaml");
+    expect(languageFromPath("LICENSE")).toBe("text");
   });
 });

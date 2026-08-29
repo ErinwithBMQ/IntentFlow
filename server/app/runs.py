@@ -13,12 +13,19 @@ from app.agent.model_client import ModelClient, OpenAIResponsesModelClient
 from app.agent.models import IntentBrief, RunEvent, RunReport, RunResult
 from app.agent.runner import DEFAULT_MAX_STEPS, AgentRunner
 from app.agent.tools import ToolContext, ToolRegistry
-from app.workspaces import DEFAULT_IGNORED_NAMES
+from app.workspaces import DEFAULT_IGNORED_NAMES, WorkspaceService
+
+ReviewStatus = Literal["pending", "accepted", "discarded"]
+
+
+class RunReviewError(RuntimeError):
+    """Raised when a run cannot transition to the requested review state."""
 
 
 class RunSnapshot(BaseModel):
     id: str
     status: Literal["running", "completed", "failed", "stopped"]
+    review_status: ReviewStatus
     workspace_relative_path: str
     events: list[RunEvent]
     report: RunReport | None = None
@@ -37,6 +44,7 @@ class RunRecord:
         self.baseline = baseline
         self.relative_path = relative_path
         self.status: Literal["running", "completed", "failed", "stopped"] = "running"
+        self.review_status: ReviewStatus = "pending"
         self.events: list[RunEvent] = []
         self.pending_finished_event: RunEvent | None = None
         self.report: RunReport | None = None
@@ -70,6 +78,7 @@ class RunRecord:
         return RunSnapshot(
             id=self.id,
             status=self.status,
+            review_status=self.review_status,
             workspace_relative_path=self.relative_path,
             events=list(self.events),
             report=self.report,
@@ -84,6 +93,7 @@ class RunManager:
         model_client_factory: Callable[[ToolRegistry], ModelClient] | None = None,
         command_factory: Callable[[Path], dict[str, tuple[str, ...]]] | None = None,
         max_steps: int = DEFAULT_MAX_STEPS,
+        workspace_service: WorkspaceService | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
@@ -92,6 +102,7 @@ class RunManager:
         self.model_client_factory = model_client_factory
         self.command_factory = command_factory
         self.max_steps = max_steps
+        self.workspace_service = workspace_service or WorkspaceService()
 
     def start(self, intent: IntentBrief) -> RunSnapshot:
         if any(record.status == "running" for record in self.records.values()):
@@ -163,6 +174,32 @@ class RunManager:
             record.stop_event.set()
         return record.snapshot()
 
+    def accept(self, run_id: str) -> RunSnapshot:
+        record = self._require_record(run_id)
+        if record.review_status == "accepted":
+            return record.snapshot()
+        if record.review_status == "discarded":
+            raise RunReviewError("本次运行已放弃，不能再接受")
+        if record.status != "completed":
+            raise RunReviewError("只有已完成的运行才能接受修改")
+
+        project = self.repository_root / "examples" / "todo-demo"
+        self.workspace_service.apply_changes(record.baseline, record.workspace, project)
+        record.review_status = "accepted"
+        return record.snapshot()
+
+    def discard(self, run_id: str) -> RunSnapshot:
+        record = self._require_record(run_id)
+        if record.review_status == "discarded":
+            return record.snapshot()
+        if record.review_status == "accepted":
+            raise RunReviewError("本次运行已接受，不能再放弃")
+        if record.status == "running":
+            raise RunReviewError("运行结束后才能放弃修改")
+
+        record.review_status = "discarded"
+        return record.snapshot()
+
     async def stream(self, run_id: str) -> AsyncIterator[str]:
         record = self.records.get(run_id)
         if record is None:
@@ -185,6 +222,12 @@ class RunManager:
                 yield f"id: {event.sequence}\nevent: run_event\ndata: {payload}\n\n"
             if finished and next_index == len(record.events):
                 break
+
+    def _require_record(self, run_id: str) -> RunRecord:
+        record = self.records.get(run_id)
+        if record is None:
+            raise KeyError(run_id)
+        return record
 
     async def _execute(
         self,

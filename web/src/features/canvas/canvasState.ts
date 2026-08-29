@@ -1,4 +1,4 @@
-import type { Edge, Node } from "@xyflow/react";
+import type { Edge, EdgeChange, Node, NodeChange } from "@xyflow/react";
 
 import type { CanvasNoteLabel, IntentCanvas } from "../../services/api";
 
@@ -85,4 +85,16 @@ export function isStoredCanvas(value: unknown): value is {
     Array.isArray(candidate.edges) &&
     typeof candidate.supplementalText === "string"
   );
+}
+
+export function nodeChangesInvalidateIntent(changes: NodeChange<NoteNode>[]): boolean {
+  return changes.some((change) => (
+    change.type === "add" || change.type === "remove" || change.type === "replace"
+  ));
+}
+
+export function edgeChangesInvalidateIntent(changes: EdgeChange[]): boolean {
+  return changes.some((change) => (
+    change.type === "add" || change.type === "remove" || change.type === "replace"
+  ));
 }

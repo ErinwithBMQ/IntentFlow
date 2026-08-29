@@ -12,15 +12,25 @@ import {
 } from "lucide-react";
 import { useMemo } from "react";
 
-import type { IntentBrief, RunEvent, RunSnapshot } from "../../services/api";
+import type {
+  ChangeSummary,
+  IntentBrief,
+  RunEvent,
+  RunSnapshot,
+} from "../../services/api";
 import { buildConversationActivities, type ConversationAction } from "./conversation";
 
 type SingleRunConversationProps = {
   brief: IntentBrief;
   run: RunSnapshot;
   runError: string;
+  changes: ChangeSummary | null;
+  reviewAction: "accept" | "discard" | null;
+  reviewError: string;
   onHighlightSources: (sourceIds: string[]) => void;
   onOpenRelatedFile: (path: string) => void;
+  onAccept: () => void;
+  onDiscard: () => void;
 };
 
 const requirementStatusText = {
@@ -30,12 +40,23 @@ const requirementStatusText = {
   unresolved: "未解决",
 } as const;
 
+const reviewStatusText = {
+  pending: "待审查",
+  accepted: "已接受",
+  discarded: "已放弃",
+} as const;
+
 export function SingleRunConversation({
   brief,
   run,
   runError,
+  changes,
+  reviewAction,
+  reviewError,
   onHighlightSources,
   onOpenRelatedFile,
+  onAccept,
+  onDiscard,
 }: SingleRunConversationProps) {
   const activities = useMemo(() => buildConversationActivities(run.events), [run.events]);
 
@@ -197,6 +218,70 @@ export function SingleRunConversation({
                 );
               })}
             </div>
+          </div>
+        </section>
+      )}
+
+      {run.status !== "running" && (
+        <section className="conversation-message conversation-message--agent">
+          <div className="conversation-avatar"><Check size={14} /></div>
+          <div className="conversation-bubble review-card">
+            <div className="review-card__heading">
+              <span className="conversation-speaker">代码审查</span>
+              <span className={`review-status review-status--${run.review_status}`}>
+                {reviewStatusText[run.review_status]}
+              </span>
+            </div>
+            {run.review_status === "pending" ? (
+              <>
+                <strong>
+                  {changes
+                    ? `${changes.changed_files} 个文件等待你的决定`
+                    : "正在准备变更摘要"}
+                </strong>
+                <p>
+                  {run.status === "completed"
+                    ? "接受会将本次变更写回项目当前版本；放弃只记录决定，Agent 修改版本和 Diff 仍会保留。"
+                    : "本次运行没有完整完成，不能接受修改，但可以保留记录并放弃本次结果。"}
+                </p>
+                <div className="review-actions">
+                  <button
+                    className="review-button review-button--discard"
+                    type="button"
+                    disabled={reviewAction !== null}
+                    onClick={onDiscard}
+                  >
+                    {reviewAction === "discard" && <LoaderCircle className="spin" size={12} />}
+                    放弃修改
+                  </button>
+                  {run.status === "completed" && (
+                    <button
+                      className="review-button review-button--accept"
+                      type="button"
+                      disabled={reviewAction !== null || changes === null}
+                      onClick={onAccept}
+                    >
+                      {reviewAction === "accept" && <LoaderCircle className="spin" size={12} />}
+                      接受全部
+                    </button>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <strong>
+                  {run.review_status === "accepted"
+                    ? "本次修改已写入项目当前版本"
+                    : "本次修改已放弃"}
+                </strong>
+                <p>
+                  {run.review_status === "accepted"
+                    ? "项目当前版本已刷新；Agent 修改版本和历史 Diff 保留用于核对。"
+                    : "项目当前版本没有变化；Agent 修改版本和历史 Diff 保留用于核对。"}
+                </p>
+              </>
+            )}
+            {reviewError && <p className="review-error"><X size={12} />{reviewError}</p>}
           </div>
         </section>
       )}

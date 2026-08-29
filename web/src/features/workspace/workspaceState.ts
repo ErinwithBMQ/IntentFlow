@@ -22,3 +22,22 @@ export function diffLineKind(
   if (line.startsWith("-")) return "deletion";
   return "context";
 }
+
+export function languageFromPath(path: string): string {
+  const extension = path.split(".").pop()?.toLowerCase();
+  return {
+    css: "css",
+    html: "html",
+    htm: "html",
+    js: "javascript",
+    jsx: "javascript",
+    json: "json",
+    md: "markdown",
+    py: "python",
+    sh: "shell",
+    ts: "typescript",
+    tsx: "typescript",
+    yml: "yaml",
+    yaml: "yaml",
+  }[extension ?? ""] ?? "text";
+}

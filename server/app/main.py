@@ -15,11 +15,13 @@ from app.intent import (
     compile_canvas,
     validate_canvas_input,
 )
-from app.runs import RunManager, RunRecord, RunSnapshot
+from app.runs import RunManager, RunRecord, RunReviewError, RunSnapshot
 from app.workspaces import (
     ChangeSummary,
     FileDiff,
     WorkspaceAccessError,
+    WorkspaceApplyError,
+    WorkspaceConflictError,
     WorkspaceFile,
     WorkspaceService,
     WorkspaceTree,
@@ -201,6 +203,30 @@ async def stop_run(run_id: str) -> RunSnapshot:
         return await run_manager.stop(run_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="运行记录不存在") from error
+
+
+@app.post("/api/runs/{run_id}/accept", response_model=RunSnapshot)
+async def accept_run(run_id: str) -> RunSnapshot:
+    try:
+        return run_manager.accept(run_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from error
+    except (RunReviewError, WorkspaceConflictError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except WorkspaceAccessError as error:
+        raise workspace_http_error(error) from error
+    except WorkspaceApplyError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/runs/{run_id}/discard", response_model=RunSnapshot)
+async def discard_run(run_id: str) -> RunSnapshot:
+    try:
+        return run_manager.discard(run_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from error
+    except RunReviewError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 def project_root() -> Path:

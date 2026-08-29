@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import difflib
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -39,6 +42,17 @@ class WorkspaceAccessError(Exception):
     def __init__(self, kind: WorkspaceErrorKind, message: str) -> None:
         super().__init__(message)
         self.kind = kind
+
+
+class WorkspaceConflictError(RuntimeError):
+    def __init__(self, conflicting_paths: list[str]) -> None:
+        self.conflicting_paths = conflicting_paths
+        paths = "、".join(conflicting_paths)
+        super().__init__(f"基准项目已发生变化，无法接受本次修改：{paths}")
+
+
+class WorkspaceApplyError(RuntimeError):
+    """Raised when a reviewed workspace cannot be safely written back."""
 
 
 class WorkspaceEntry(BaseModel):
@@ -214,6 +228,76 @@ class WorkspaceService:
         diff = self._create_diff(normalized_path, before, after)[0] if change.viewable else ""
         return FileDiff(**change.model_dump(), diff=diff)
 
+    def apply_changes(
+        self,
+        baseline_root: Path,
+        workspace_root: Path,
+        target_root: Path,
+    ) -> ChangeSummary:
+        summary = self.changes(baseline_root, workspace_root)
+        unavailable = [change.path for change in summary.files if not change.viewable]
+        if unavailable:
+            paths = "、".join(unavailable)
+            raise WorkspaceApplyError(f"存在无法完整审查的文件，不能接受：{paths}")
+
+        resolved_target_root = self._workspace_root(target_root)
+        operations: list[tuple[FileChange, Path, Path | None, Path | None]] = []
+        conflicts: list[str] = []
+        for change in summary.files:
+            baseline_target, _ = self._resolve_path(
+                baseline_root,
+                change.path,
+                require_exists=False,
+            )
+            workspace_target, _ = self._resolve_path(
+                workspace_root,
+                change.path,
+                require_exists=False,
+            )
+            target = self._resolve_write_target(resolved_target_root, change.path)
+            before = baseline_target if baseline_target.is_file() else None
+            after = workspace_target if workspace_target.is_file() else None
+            current = target if target.is_file() else None
+            if not self._same_file_state(before, current) or (
+                before is None and target.exists()
+            ):
+                conflicts.append(change.path)
+            operations.append((change, target, before, after))
+
+        if conflicts:
+            raise WorkspaceConflictError(conflicts)
+
+        with tempfile.TemporaryDirectory(prefix="intentflow-accept-") as temporary:
+            backup_root = Path(temporary)
+            backups: dict[str, Path | None] = {}
+            for change, target, _, _ in operations:
+                if target.is_file():
+                    backup = backup_root / Path(change.path)
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(target, backup)
+                    backups[change.path] = backup
+                else:
+                    backups[change.path] = None
+
+            applied: list[tuple[FileChange, Path]] = []
+            try:
+                for change, target, _, after in operations:
+                    if change.status == "deleted":
+                        target.unlink()
+                    else:
+                        if after is None:
+                            raise WorkspaceApplyError(f"运行副本中的文件不存在：{change.path}")
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        self._replace_file(after, target)
+                    applied.append((change, target))
+            except (OSError, WorkspaceApplyError) as error:
+                self._rollback_applied(resolved_target_root, applied, backups)
+                if isinstance(error, WorkspaceApplyError):
+                    raise
+                raise WorkspaceApplyError("接受修改时写入失败，已回滚已应用文件") from error
+
+        return summary
+
     def _build_change(
         self,
         relative_path: str,
@@ -336,6 +420,26 @@ class WorkspaceService:
             raise WorkspaceAccessError("not_found", "文件不存在")
         return target, normalized_path
 
+    def _resolve_write_target(self, resolved_root: Path, relative_path: str) -> Path:
+        path = Path(relative_path)
+        if not relative_path.strip() or path.is_absolute() or ".." in path.parts:
+            raise WorkspaceAccessError("invalid_path", "只允许写入工作区内的相对路径")
+        if any(self._is_ignored(part) for part in path.parts):
+            raise WorkspaceAccessError("invalid_path", "该路径不允许写入")
+
+        unresolved = resolved_root
+        for part in path.parts:
+            unresolved /= part
+            if unresolved.is_symlink():
+                raise WorkspaceAccessError("invalid_path", "不允许通过符号链接写入文件")
+
+        target = unresolved.resolve(strict=False)
+        try:
+            target.relative_to(resolved_root)
+        except ValueError as error:
+            raise WorkspaceAccessError("invalid_path", "路径超出工作区范围") from error
+        return target
+
     def _read_text_file(self, target: Path) -> str:
         try:
             size = target.stat().st_size
@@ -378,6 +482,49 @@ class WorkspaceService:
                     return False
                 if not left_chunk:
                     return True
+
+    def _same_file_state(self, baseline: Path | None, current: Path | None) -> bool:
+        if baseline is None or current is None:
+            return baseline is None and current is None
+        return self._files_equal(baseline, current)
+
+    def _replace_file(self, source: Path, target: Path) -> None:
+        temporary = target.with_name(f".{target.name}.intentflow-{uuid4().hex}.tmp")
+        try:
+            shutil.copy2(source, temporary)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _rollback_applied(
+        self,
+        target_root: Path,
+        applied: list[tuple[FileChange, Path]],
+        backups: dict[str, Path | None],
+    ) -> None:
+        for change, target in reversed(applied):
+            backup = backups[change.path]
+            try:
+                if backup is None:
+                    target.unlink(missing_ok=True)
+                    self._remove_empty_parents(target.parent, target_root)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    self._replace_file(backup, target)
+            except OSError as error:
+                raise WorkspaceApplyError(
+                    f"接受修改失败，且无法完整回滚文件：{change.path}"
+                ) from error
+
+    @staticmethod
+    def _remove_empty_parents(directory: Path, root: Path) -> None:
+        current = directory
+        while current != root:
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
 
     @staticmethod
     def _language_for(path: Path) -> str:

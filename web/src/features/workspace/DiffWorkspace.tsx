@@ -1,7 +1,8 @@
 import { FileDiff as FileDiffIcon, LoaderCircle } from "lucide-react";
 
 import type { ChangeSummary, FileChange, FileDiff } from "../../services/api";
-import { diffLineKind } from "./workspaceState";
+import { SyntaxLine } from "./SyntaxLine";
+import { diffLineKind, languageFromPath } from "./workspaceState";
 
 type DiffWorkspaceProps = {
   changes: ChangeSummary | null;
@@ -97,11 +98,23 @@ export function DiffWorkspace({
             <div className="diff-lines" aria-label={`${diff.path} Diff`}>
               {diff.diff.split(/\r?\n/).filter((line, index, lines) => (
                 line.length > 0 || index < lines.length - 1
-              )).map((line, index) => (
-                <div className={`diff-line diff-line--${diffLineKind(line)}`} key={`${index}-${line}`}>
-                  <span>{index + 1}</span><code>{line || " "}</code>
-                </div>
-              ))}
+              )).map((line, index) => {
+                const kind = diffLineKind(line);
+                const hasCodeBody = kind === "addition" || kind === "deletion" || kind === "context";
+                return (
+                  <div className={`diff-line diff-line--${kind}`} key={`${index}-${line}`}>
+                    <span>{index + 1}</span>
+                    <code>
+                      {hasCodeBody ? (
+                        <>
+                          <span className="diff-prefix">{line.slice(0, 1) || " "}</span>
+                          <SyntaxLine text={line.slice(1)} language={languageFromPath(diff.path)} />
+                        </>
+                      ) : line || " "}
+                    </code>
+                  </div>
+                );
+              })}
             </div>
           </>
         ) : (

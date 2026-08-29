@@ -35,21 +35,28 @@ export function ProjectExplorer({
         <span className="stage-label">只读</span>
       </div>
       <div className="file-panel__content">
+        <p className="workspace-version-note">
+          Agent 只修改隔离版本；点击“接受全部”后，变更才会写入项目当前版本。
+        </p>
         <WorkspaceRoot
-          title="原始项目"
-          meta="基准"
+          key={`project-${runId ? "run" : "idle"}`}
+          title="项目当前版本"
+          meta="正式文件"
           scope="project"
           tree={projectTree}
           available
+          defaultExpanded={!runId}
           activeFileKey={activeFileKey}
           onOpenFile={onOpenFile}
         />
         <WorkspaceRoot
-          title="运行副本"
-          meta={runId ? runId.slice(0, 6) : "等待运行"}
+          key={`run-${runId ?? "idle"}`}
+          title="Agent 修改版本"
+          meta={runId ? "隔离副本" : "等待运行"}
           scope="run"
           tree={runTree}
           available={Boolean(runId)}
+          defaultExpanded={Boolean(runId)}
           activeFileKey={activeFileKey}
           onOpenFile={onOpenFile}
         />
@@ -65,6 +72,7 @@ type WorkspaceRootProps = {
   scope: WorkspaceScope;
   tree: WorkspaceTree | null;
   available: boolean;
+  defaultExpanded: boolean;
   activeFileKey: string | null;
   onOpenFile: (scope: WorkspaceScope, path: string) => void;
 };
@@ -75,10 +83,11 @@ function WorkspaceRoot({
   scope,
   tree,
   available,
+  defaultExpanded,
   activeFileKey,
   onOpenFile,
 }: WorkspaceRootProps) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   return (
     <section className="workspace-root">
       <button
@@ -108,7 +117,7 @@ function WorkspaceRoot({
           {tree.truncated && <p className="file-tree__notice">目录过大，仅显示前 2000 项</p>}
         </div>
       ) : (
-        <p className="file-tree__empty">{available ? "正在读取…" : "运行后显示副本"}</p>
+        <p className="file-tree__empty">{available ? "正在读取…" : "运行后显示 Agent 修改版本"}</p>
       ))}
     </section>
   );

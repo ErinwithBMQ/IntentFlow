@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  acceptRun,
   compileIntent,
   createRun,
+  discardRun,
   getHealth,
   getProjectFile,
   getProjectTree,
@@ -105,6 +107,7 @@ describe("getHealth", () => {
     const snapshot = {
       id: "run-1",
       status: "running",
+      review_status: "pending",
       workspace_relative_path: "runtime-data/runs/run-1/todo-demo",
       events: [],
       report: null,
@@ -129,6 +132,40 @@ describe("getHealth", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "/api/runs/run-1/stop",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("accepts and discards a completed run", async () => {
+    const snapshot = {
+      id: "run-1",
+      status: "completed",
+      review_status: "accepted",
+      workspace_relative_path: "runtime-data/runs/run-1/todo-demo",
+      events: [],
+      report: null,
+    };
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(snapshot), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await acceptRun("run-1");
+    await discardRun("run-1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/runs/run-1/accept",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/runs/run-1/discard",
       expect.objectContaining({ method: "POST" }),
     );
   });

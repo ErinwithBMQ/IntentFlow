@@ -53,6 +53,7 @@ export type IntentCompileResponse = {
 };
 
 export type RunStatus = "running" | "completed" | "failed" | "stopped";
+export type ReviewStatus = "pending" | "accepted" | "discarded";
 
 export type RunEvent = {
   sequence: number;
@@ -86,6 +87,7 @@ export type RequirementResult = {
 export type RunSnapshot = {
   id: string;
   status: RunStatus;
+  review_status: ReviewStatus;
   workspace_relative_path: string;
   events: RunEvent[];
   report: RunReport | null;
@@ -219,6 +221,14 @@ export function getRunFileDiff(runId: string, path: string): Promise<FileDiff> {
 
 export function stopRun(runId: string): Promise<RunSnapshot> {
   return postJson<RunSnapshot>(`/api/runs/${runId}/stop`);
+}
+
+export function acceptRun(runId: string): Promise<RunSnapshot> {
+  return postJson<RunSnapshot>(`/api/runs/${runId}/accept`);
+}
+
+export function discardRun(runId: string): Promise<RunSnapshot> {
+  return postJson<RunSnapshot>(`/api/runs/${runId}/discard`);
 }
 
 export function subscribeToRun(
