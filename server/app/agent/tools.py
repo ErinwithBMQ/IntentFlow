@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -37,6 +38,11 @@ class ToolExecution(BaseModel):
     result: ToolResult
     report: RunReport | None = None
     requirement_claims: list[RequirementClaim] = Field(default_factory=list)
+
+
+class ToolApprovalPreview(BaseModel):
+    target: str
+    patch: str
 
 
 class BaseTool(ABC):
@@ -168,7 +174,41 @@ class ApplyPatchTool(BaseTool):
     description = "Replace one exact text occurrence in a UTF-8 workspace file."
     arguments_model = ApplyPatchArguments
 
+    def preview(
+        self,
+        call: ToolCall,
+        context: ToolContext,
+    ) -> ToolApprovalPreview | ToolExecution:
+        prepared = self._prepare(call, context)
+        if isinstance(prepared, ToolExecution):
+            return prepared
+        arguments, _, content, updated = prepared
+        patch = "".join(
+            difflib.unified_diff(
+                content.splitlines(keepends=True),
+                updated.splitlines(keepends=True),
+                fromfile=f"a/{arguments.path}",
+                tofile=f"b/{arguments.path}",
+            )
+        )
+        return ToolApprovalPreview(target=arguments.path, patch=patch)
+
     async def execute(self, call: ToolCall, context: ToolContext) -> ToolExecution:
+        prepared = self._prepare(call, context)
+        if isinstance(prepared, ToolExecution):
+            return prepared
+        arguments, target, _, updated = prepared
+        try:
+            target.write_text(updated, encoding="utf-8")
+        except OSError as error:
+            return _failed_execution(call, str(error))
+        return _successful_execution(call, f"Updated {arguments.path}", arguments.path)
+
+    def _prepare(
+        self,
+        call: ToolCall,
+        context: ToolContext,
+    ) -> tuple[ApplyPatchArguments, Path, str, str] | ToolExecution:
         try:
             arguments = self.arguments_model.model_validate(call.arguments)
         except ValidationError as error:
@@ -185,11 +225,9 @@ class ApplyPatchTool(BaseTool):
                     f"old_text must match exactly once; found {occurrence_count} occurrences"
                 )
             updated = content.replace(arguments.old_text, arguments.new_text, 1)
-            target.write_text(updated, encoding="utf-8")
         except (OSError, UnicodeError, ValueError) as error:
             return _failed_execution(call, str(error))
-
-        return _successful_execution(call, f"Updated {arguments.path}", arguments.path)
+        return arguments, target, content, updated
 
 
 class RunCommandArguments(BaseModel):
@@ -332,6 +370,16 @@ class ToolRegistry:
         if tool is None:
             return _failed_execution(call, f"Unknown tool: {call.name}")
         return await tool.execute(call, context)
+
+    def approval_preview(
+        self,
+        call: ToolCall,
+        context: ToolContext,
+    ) -> ToolApprovalPreview | ToolExecution | None:
+        tool = self._tools.get(call.name)
+        if isinstance(tool, ApplyPatchTool):
+            return tool.preview(call, context)
+        return None
 
 
 def _successful_execution(call: ToolCall, summary: str, output: str) -> ToolExecution:

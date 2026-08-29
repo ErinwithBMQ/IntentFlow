@@ -7,10 +7,10 @@ from typing import Literal
 from uuid import uuid4
 
 from dotenv import dotenv_values
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.agent.model_client import ModelClient, OpenAIResponsesModelClient
-from app.agent.models import IntentBrief, RunEvent, RunReport, RunResult
+from app.agent.models import IntentBrief, RunEvent, RunReport, RunResult, ToolApproval
 from app.agent.runner import DEFAULT_MAX_STEPS, AgentRunner
 from app.agent.tools import ToolContext, ToolRegistry
 from app.workspaces import DEFAULT_IGNORED_NAMES, WorkspaceService
@@ -30,6 +30,8 @@ class RunSnapshot(BaseModel):
     session_id: str | None = None
     trigger_message_id: str | None = None
     intent: IntentBrief | None = None
+    approval_mode: Literal["ask", "auto"] = "ask"
+    approvals: list[ToolApproval] = Field(default_factory=list)
     events: list[RunEvent]
     report: RunReport | None = None
 
@@ -46,6 +48,7 @@ class RunRecord:
         trigger_message_id: str | None = None,
         intent: IntentBrief | None = None,
         snapshot_sink: Callable[[RunSnapshot], None] | None = None,
+        approval_timeout_seconds: float = 300.0,
     ) -> None:
         self.id = run_id
         self.workspace = workspace
@@ -55,6 +58,10 @@ class RunRecord:
         self.trigger_message_id = trigger_message_id
         self.intent = intent
         self.snapshot_sink = snapshot_sink
+        self.approval_timeout_seconds = approval_timeout_seconds
+        self.approval_mode: Literal["ask", "auto"] = "ask"
+        self.approvals: list[ToolApproval] = []
+        self._approval_futures: dict[str, asyncio.Future[Literal["approved", "rejected"]]] = {}
         self.status: Literal["running", "completed", "failed", "stopped"] = "running"
         self.review_status: ReviewStatus = "pending"
         self.events: list[RunEvent] = []
@@ -92,6 +99,73 @@ class RunRecord:
         if self.snapshot_sink is not None:
             self.snapshot_sink(self.snapshot())
 
+    def register(self, approval: ToolApproval) -> bool:
+        if self.approval_mode == "auto":
+            approval.status = "approved"
+            approval.decision = "allow_for_run"
+            self.approvals.append(approval)
+            self.persist()
+            return False
+
+        self.approvals.append(approval)
+        self._approval_futures[approval.id] = asyncio.get_running_loop().create_future()
+        self.persist()
+        return True
+
+    async def wait(self, approval_id: str) -> Literal["approved", "rejected", "cancelled"]:
+        approval = self._approval(approval_id)
+        if approval.status == "approved":
+            return "approved"
+        if approval.status == "rejected":
+            return "rejected"
+
+        future = self._approval_futures[approval_id]
+        stop_task = asyncio.create_task(self.stop_event.wait())
+        done, _ = await asyncio.wait(
+            {future, stop_task},
+            timeout=self.approval_timeout_seconds,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if future in done:
+            stop_task.cancel()
+            await asyncio.gather(stop_task, return_exceptions=True)
+            return future.result()
+
+        approval.status = "cancelled"
+        self._approval_futures.pop(approval_id, None)
+        if not stop_task.done():
+            stop_task.cancel()
+            await asyncio.gather(stop_task, return_exceptions=True)
+        self.persist()
+        return "cancelled"
+
+    def resolve_approval(
+        self,
+        approval_id: str,
+        decision: Literal["allow_once", "allow_for_run", "reject"],
+    ) -> None:
+        if self.status != "running":
+            raise RunReviewError("运行已经结束，不能再处理审批")
+        approval = self._approval(approval_id)
+        if approval.status != "approval_required":
+            raise RunReviewError("该审批已经处理，不能重复响应")
+
+        approval.decision = decision
+        approval.status = "rejected" if decision == "reject" else "approved"
+        if decision == "allow_for_run":
+            self.approval_mode = "auto"
+        future = self._approval_futures.pop(approval_id, None)
+        if future is None or future.done():
+            raise RunReviewError("审批请求已经失效")
+        future.set_result("rejected" if decision == "reject" else "approved")
+        self.persist()
+
+    def _approval(self, approval_id: str) -> ToolApproval:
+        approval = next((item for item in self.approvals if item.id == approval_id), None)
+        if approval is None:
+            raise RunReviewError("审批请求不存在")
+        return approval
+
     def snapshot(self) -> RunSnapshot:
         return RunSnapshot(
             id=self.id,
@@ -101,6 +175,8 @@ class RunRecord:
             session_id=self.session_id,
             trigger_message_id=self.trigger_message_id,
             intent=self.intent,
+            approval_mode=self.approval_mode,
+            approvals=list(self.approvals),
             events=list(self.events),
             report=self.report,
         )
@@ -116,6 +192,7 @@ class RunManager:
         max_steps: int = DEFAULT_MAX_STEPS,
         workspace_service: WorkspaceService | None = None,
         snapshot_sink: Callable[[RunSnapshot], None] | None = None,
+        approval_timeout_seconds: float = 300.0,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
@@ -126,6 +203,7 @@ class RunManager:
         self.max_steps = max_steps
         self.workspace_service = workspace_service or WorkspaceService()
         self.snapshot_sink = snapshot_sink
+        self.approval_timeout_seconds = approval_timeout_seconds
 
     def start(
         self,
@@ -168,6 +246,7 @@ class RunManager:
             trigger_message_id=trigger_message_id,
             intent=intent,
             snapshot_sink=self.snapshot_sink,
+            approval_timeout_seconds=self.approval_timeout_seconds,
         )
         self.records[run_id] = record
         record.persist()
@@ -198,6 +277,7 @@ class RunManager:
             context,
             max_steps=self.max_steps,
             event_sink=record.add_event,
+            approval_controller=record,
         )
         record.task = asyncio.create_task(self._execute(record, runner, intent))
         return record.snapshot()
@@ -214,13 +294,19 @@ class RunManager:
             trigger_message_id=snapshot.trigger_message_id,
             intent=snapshot.intent,
             snapshot_sink=self.snapshot_sink,
+            approval_timeout_seconds=self.approval_timeout_seconds,
         )
         record.status = snapshot.status
         record.review_status = snapshot.review_status
         record.events = list(snapshot.events)
         record.report = snapshot.report
+        record.approval_mode = snapshot.approval_mode
+        record.approvals = list(snapshot.approvals)
         if record.status == "running":
             record.status = "stopped"
+            for approval in record.approvals:
+                if approval.status == "approval_required":
+                    approval.status = "cancelled"
             record.events.append(
                 RunEvent(
                     sequence=len(record.events) + 1,
@@ -244,6 +330,16 @@ class RunManager:
             raise KeyError(run_id)
         if record.status == "running":
             record.stop_event.set()
+        return record.snapshot()
+
+    def resolve_approval(
+        self,
+        run_id: str,
+        approval_id: str,
+        decision: Literal["allow_once", "allow_for_run", "reject"],
+    ) -> RunSnapshot:
+        record = self._require_record(run_id)
+        record.resolve_approval(approval_id, decision)
         return record.snapshot()
 
     def accept(self, run_id: str) -> RunSnapshot:

@@ -58,11 +58,13 @@ import {
   getRunTree,
   getSession,
   listSessions,
+  resolveRunApproval,
   sendSessionMessage,
   stopRun,
   subscribeToRun,
   type CanvasNoteLabel,
   type ChangeSummary,
+  type ApprovalDecision,
   type ConversationMessage,
   type ConversationMode,
   type FileChange,
@@ -125,6 +127,10 @@ export function App() {
   const [runBrief, setRunBrief] = useState<IntentBrief | null>(null);
   const [runError, setRunError] = useState("");
   const [reviewAction, setReviewAction] = useState<"accept" | "discard" | null>(null);
+  const [toolApprovalAction, setToolApprovalAction] = useState<{
+    approvalId: string;
+    decision: ApprovalDecision;
+  } | null>(null);
   const [reviewError, setReviewError] = useState("");
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("canvas");
   const [projectTree, setProjectTree] = useState<WorkspaceTree | null>(null);
@@ -424,6 +430,9 @@ export function App() {
               }
             : current,
         );
+        if (event.kind === "approval_required") {
+          void refreshRun(snapshot.id);
+        }
       },
       () => void refreshRun(snapshot.id),
       () => void refreshRun(snapshot.id),
@@ -579,6 +588,23 @@ export function App() {
       await stopRun(run.id);
     } catch (error) {
       setRunError(error instanceof Error ? error.message : "停止 Agent 失败");
+    }
+  }
+
+  async function handleResolveApproval(approvalId: string, decision: ApprovalDecision) {
+    if (!run || run.status !== "running") return;
+    setToolApprovalAction({ approvalId, decision });
+    setRunError("");
+    try {
+      const updated = await resolveRunApproval(run.id, approvalId, decision);
+      setRun(updated);
+      setSessionRuns((currentRuns) => currentRuns.map(
+        (item) => item.id === updated.id ? updated : item,
+      ));
+    } catch (error) {
+      setRunError(errorMessage(error, "处理修改审批失败"));
+    } finally {
+      setToolApprovalAction(null);
     }
   }
 
@@ -802,7 +828,7 @@ export function App() {
     (result) => result.status === "verified",
   ).length ?? 0;
   const reviewStatusText = run
-    ? { pending: "待审查", accepted: "已接受", discarded: "已放弃" }[run.review_status]
+    ? { pending: "待审查", accepted: "已应用", discarded: "已放弃" }[run.review_status]
     : "待运行";
   const selectedRunDetail = run && runBrief ? (
     <SingleRunConversation
@@ -811,11 +837,15 @@ export function App() {
       runError={runError}
       changes={changes}
       reviewAction={reviewAction}
+      toolApprovalAction={toolApprovalAction}
       reviewError={reviewError}
       onHighlightSources={highlightSources}
       onOpenRelatedFile={(path) => void openRelatedFile(path)}
       onAccept={() => void handleAccept()}
       onDiscard={() => void handleDiscard()}
+      onResolveApproval={(approvalId, decision) => {
+        void handleResolveApproval(approvalId, decision);
+      }}
       showIntentContext={!run.session_id}
     />
   ) : null;

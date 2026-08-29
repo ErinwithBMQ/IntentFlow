@@ -41,6 +41,17 @@ class ToolResult(BaseModel):
     output: str = ""
 
 
+class ToolApproval(BaseModel):
+    id: str
+    tool_call_id: str
+    tool_name: str
+    target: str | None = None
+    reason: str
+    patch: str
+    status: Literal["approval_required", "approved", "rejected", "cancelled"]
+    decision: Literal["allow_once", "allow_for_run", "reject"] | None = None
+
+
 class RequirementClaim(BaseModel):
     requirement_id: str
     status: Literal["verified", "implemented", "failed", "unresolved"]
@@ -68,6 +79,8 @@ class RunEvent(BaseModel):
     kind: Literal[
         "run_started",
         "model_turn",
+        "approval_required",
+        "approval_resolved",
         "tool_started",
         "tool_finished",
         "run_finished",
@@ -80,6 +93,9 @@ class RunEvent(BaseModel):
     tool_name: str | None = None
     target: str | None = None
     evidence: list[str] = Field(default_factory=list)
+    approval_id: str | None = None
+    patch: str | None = None
+    approval_status: Literal["approval_required", "approved", "rejected", "cancelled"] | None = None
 
 
 class RunResult(BaseModel):

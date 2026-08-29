@@ -6,7 +6,7 @@ from httpx import ASGITransport, AsyncClient
 
 import app.main as main_module
 from app.agent.model_client import FakeModelClient
-from app.agent.models import IntentBrief, IntentRequirement, ModelTurn, ToolCall
+from app.agent.models import IntentBrief, IntentRequirement, ModelTurn, ToolApproval, ToolCall
 from app.conversation_service import build_project_context
 from app.intent.compiler import IntentRequestDecision
 from app.intent.models import CanvasNote, CanvasPosition, IntentCanvas
@@ -96,6 +96,17 @@ def test_restored_running_run_is_marked_stopped(tmp_path) -> None:
         workspace_relative_path="runtime-data/runs/run-interrupted/todo-demo",
         session_id=session.id,
         intent=sample_brief(),
+        approvals=[
+            ToolApproval(
+                id="approval-interrupted",
+                tool_call_id="patch-1",
+                tool_name="apply_patch",
+                target="source.txt",
+                reason="等待修改批准",
+                patch="--- a/source.txt\n+++ b/source.txt\n",
+                status="approval_required",
+            )
+        ],
         events=[],
     )
     store.save_run(snapshot)
@@ -106,6 +117,7 @@ def test_restored_running_run_is_marked_stopped(tmp_path) -> None:
 
     assert restored.status == "stopped"
     assert restored.events[-1].action == "服务重启，先前运行已停止"
+    assert restored.approvals[0].status == "cancelled"
     assert persisted.status == "stopped"
 
 

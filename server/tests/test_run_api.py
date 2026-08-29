@@ -129,6 +129,128 @@ def command_factory(_workspace: Path) -> dict[str, tuple[str, ...]]:
     return {"test": (sys.executable, "-c", "print('ok')")}
 
 
+def modifying_model_factory(_registry):
+    return FakeModelClient(
+        [
+            ModelTurn(
+                action="修改目标文件",
+                reason="把示例内容更新为 approved",
+                related_requirement_ids=["REQ-1"],
+                tool_calls=[
+                    ToolCall(
+                        id="patch",
+                        name="apply_patch",
+                        arguments={
+                            "path": "source.txt",
+                            "old_text": "original",
+                            "new_text": "approved",
+                        },
+                    )
+                ],
+            ),
+            ModelTurn(
+                action="运行验证",
+                reason="确认修改后的项目可验证",
+                related_requirement_ids=["REQ-1"],
+                tool_calls=[
+                    ToolCall(id="test", name="run_command", arguments={"command": "test"})
+                ],
+            ),
+            ModelTurn(
+                action="提交结果",
+                reason="修改已经验证",
+                tool_calls=[
+                    ToolCall(
+                        id="report",
+                        name="report_result",
+                        arguments={
+                            "status": "completed",
+                            "summary": "修改完成",
+                            "evidence": ["test passed"],
+                            "requirements": [
+                                {
+                                    "requirement_id": "REQ-1",
+                                    "status": "verified",
+                                    "summary": "修改已经通过测试",
+                                }
+                            ],
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+
+def two_patch_model_factory(_registry):
+    return FakeModelClient(
+        [
+            ModelTurn(
+                action="第一次修改",
+                reason="先更新为 intermediate",
+                related_requirement_ids=["REQ-1"],
+                tool_calls=[
+                    ToolCall(
+                        id="patch-1",
+                        name="apply_patch",
+                        arguments={
+                            "path": "source.txt",
+                            "old_text": "original",
+                            "new_text": "intermediate",
+                        },
+                    )
+                ],
+            ),
+            ModelTurn(
+                action="第二次修改",
+                reason="完成目标内容",
+                related_requirement_ids=["REQ-1"],
+                tool_calls=[
+                    ToolCall(
+                        id="patch-2",
+                        name="apply_patch",
+                        arguments={
+                            "path": "source.txt",
+                            "old_text": "intermediate",
+                            "new_text": "approved",
+                        },
+                    )
+                ],
+            ),
+            ModelTurn(
+                action="运行验证",
+                reason="确认两次修改后的结果",
+                related_requirement_ids=["REQ-1"],
+                tool_calls=[
+                    ToolCall(id="test", name="run_command", arguments={"command": "test"})
+                ],
+            ),
+            ModelTurn(
+                action="提交结果",
+                reason="修改已经验证",
+                tool_calls=[
+                    ToolCall(
+                        id="report",
+                        name="report_result",
+                        arguments={
+                            "status": "completed",
+                            "summary": "两次修改完成",
+                            "evidence": ["test passed"],
+                            "requirements": [
+                                {
+                                    "requirement_id": "REQ-1",
+                                    "status": "verified",
+                                    "summary": "修改已经通过测试",
+                                }
+                            ],
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+
 async def wait_until_finished(manager: RunManager, run_id: str) -> None:
     for _ in range(100):
         record = manager.get(run_id)
@@ -136,6 +258,241 @@ async def wait_until_finished(manager: RunManager, run_id: str) -> None:
             return
         await asyncio.sleep(0.01)
     raise AssertionError("run did not finish")
+
+
+async def wait_for_approval(manager: RunManager, run_id: str) -> str:
+    for _ in range(100):
+        record = manager.get(run_id)
+        if record is not None:
+            pending = next(
+                (
+                    approval
+                    for approval in record.approvals
+                    if approval.status == "approval_required"
+                ),
+                None,
+            )
+            if pending is not None:
+                return pending.id
+        await asyncio.sleep(0.01)
+    raise AssertionError("approval was not requested")
+
+
+def run_payload() -> dict[str, object]:
+    return {
+        "intent": {
+            "title": "修改示例",
+            "goal": "更新文件并验证",
+            "requirements": [
+                {
+                    "id": "REQ-1",
+                    "description": "更新文件",
+                    "acceptance_criteria": ["测试通过"],
+                    "source_ids": ["note-1"],
+                }
+            ],
+            "constraints": [],
+        }
+    }
+
+
+async def test_apply_patch_waits_for_approval_and_rejects_duplicate_response(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    make_repository(tmp_path)
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=modifying_model_factory,
+        command_factory=command_factory,
+    )
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        created = await client.post("/api/runs", json=run_payload())
+        run_id = created.json()["id"]
+        approval_id = await wait_for_approval(manager, run_id)
+        recoverable = await client.get(f"/api/runs/{run_id}")
+        record = manager.get(run_id)
+        assert record is not None
+        assert (record.workspace / "source.txt").read_text(encoding="utf-8") == "original"
+        approval = record.approvals[0]
+        assert "-original" in approval.patch
+        assert "+approved" in approval.patch
+
+        approved = await client.post(
+            f"/api/runs/{run_id}/approvals/{approval_id}",
+            json={"decision": "allow_once"},
+        )
+        duplicate = await client.post(
+            f"/api/runs/{run_id}/approvals/{approval_id}",
+            json={"decision": "allow_once"},
+        )
+        await wait_until_finished(manager, run_id)
+        changes = await client.get(f"/api/runs/{run_id}/changes")
+
+    assert recoverable.json()["approvals"][0]["id"] == approval_id
+    assert approved.status_code == 200
+    assert approved.json()["approvals"][0]["status"] == "approved"
+    assert duplicate.status_code == 409
+    assert (record.workspace / "source.txt").read_text(encoding="utf-8") == "approved"
+    assert record.status == "completed"
+    assert record.report.requirement_results[0].status == "verified"
+    assert changes.json()["changed_files"] == 1
+
+
+async def test_stop_cancels_pending_approval_without_applying_patch(tmp_path, monkeypatch) -> None:
+    make_repository(tmp_path)
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=modifying_model_factory,
+        command_factory=command_factory,
+    )
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        created = await client.post("/api/runs", json=run_payload())
+        run_id = created.json()["id"]
+        await wait_for_approval(manager, run_id)
+        stopped = await client.post(f"/api/runs/{run_id}/stop")
+        await wait_until_finished(manager, run_id)
+
+    record = manager.get(run_id)
+    assert record is not None
+    assert stopped.status_code == 200
+    assert record.status == "stopped"
+    assert record.approvals[0].status == "cancelled"
+    assert (record.workspace / "source.txt").read_text(encoding="utf-8") == "original"
+
+
+async def test_allow_for_run_automatically_approves_later_patches(tmp_path, monkeypatch) -> None:
+    make_repository(tmp_path)
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=two_patch_model_factory,
+        command_factory=command_factory,
+    )
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        created = await client.post("/api/runs", json=run_payload())
+        run_id = created.json()["id"]
+        approval_id = await wait_for_approval(manager, run_id)
+        response = await client.post(
+            f"/api/runs/{run_id}/approvals/{approval_id}",
+            json={"decision": "allow_for_run"},
+        )
+        await wait_until_finished(manager, run_id)
+
+    record = manager.get(run_id)
+    assert record is not None
+    assert response.status_code == 200
+    assert record.approval_mode == "auto"
+    assert [approval.status for approval in record.approvals] == ["approved", "approved"]
+    assert (record.workspace / "source.txt").read_text(encoding="utf-8") == "approved"
+    required_events = [event for event in record.events if event.kind == "approval_required"]
+    assert len(required_events) == 1
+
+
+async def test_rejected_patch_is_returned_to_model_without_changing_file(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    make_repository(tmp_path)
+    created_models: list[FakeModelClient] = []
+
+    def rejecting_model_factory(_registry):
+        model = FakeModelClient(
+            [
+                ModelTurn(
+                    action="请求修改",
+                    reason="尝试更新目标文件",
+                    related_requirement_ids=["REQ-1"],
+                    tool_calls=[
+                        ToolCall(
+                            id="patch",
+                            name="apply_patch",
+                            arguments={
+                                "path": "source.txt",
+                                "old_text": "original",
+                                "new_text": "rejected",
+                            },
+                        )
+                    ],
+                ),
+                ModelTurn(
+                    action="报告拒绝结果",
+                    reason="用户没有允许修改",
+                    tool_calls=[
+                        ToolCall(
+                            id="report",
+                            name="report_result",
+                            arguments={
+                                "status": "failed",
+                                "summary": "修改被用户拒绝",
+                                "requirements": [
+                                    {
+                                        "requirement_id": "REQ-1",
+                                        "status": "unresolved",
+                                        "summary": "用户拒绝了文件修改",
+                                    }
+                                ],
+                            },
+                        )
+                    ],
+                ),
+            ]
+        )
+        created_models.append(model)
+        return model
+
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=rejecting_model_factory,
+        command_factory=command_factory,
+    )
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        created = await client.post("/api/runs", json=run_payload())
+        run_id = created.json()["id"]
+        approval_id = await wait_for_approval(manager, run_id)
+        rejected = await client.post(
+            f"/api/runs/{run_id}/approvals/{approval_id}",
+            json={"decision": "reject"},
+        )
+        await wait_until_finished(manager, run_id)
+
+    record = manager.get(run_id)
+    assert record is not None
+    rejected_result = created_models[0].received_histories[1][-1]
+    assert rejected.status_code == 200
+    assert rejected_result.ok is False
+    assert "User rejected" in rejected_result.summary
+    assert (record.workspace / "source.txt").read_text(encoding="utf-8") == "original"
+
+
+async def test_pending_approval_times_out_without_applying_patch(tmp_path) -> None:
+    make_repository(tmp_path)
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=modifying_model_factory,
+        command_factory=command_factory,
+        approval_timeout_seconds=0.01,
+    )
+    snapshot = manager.start(IntentBrief.model_validate(run_payload()["intent"]))
+
+    await wait_until_finished(manager, snapshot.id)
+
+    record = manager.get(snapshot.id)
+    assert record is not None
+    assert record.status == "stopped"
+    assert record.approvals[0].status == "cancelled"
+    assert (record.workspace / "source.txt").read_text(encoding="utf-8") == "original"
 
 
 async def test_run_api_copies_demo_and_streams_events(tmp_path, monkeypatch) -> None:

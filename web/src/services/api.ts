@@ -54,10 +54,23 @@ export type IntentCompileResponse = {
 
 export type RunStatus = "running" | "completed" | "failed" | "stopped";
 export type ReviewStatus = "pending" | "accepted" | "discarded";
+export type ApprovalDecision = "allow_once" | "allow_for_run" | "reject";
+export type ApprovalStatus = "approval_required" | "approved" | "rejected" | "cancelled";
+
+export type ToolApproval = {
+  id: string;
+  tool_call_id: string;
+  tool_name: string;
+  target: string | null;
+  reason: string;
+  patch: string;
+  status: ApprovalStatus;
+  decision: ApprovalDecision | null;
+};
 
 export type RunEvent = {
   sequence: number;
-  kind: "run_started" | "model_turn" | "tool_started" | "tool_finished" | "run_finished";
+  kind: "run_started" | "model_turn" | "approval_required" | "approval_resolved" | "tool_started" | "tool_finished" | "run_finished";
   phase: "planning" | "acting" | "verifying" | "finished";
   status: "running" | "succeeded" | "failed" | "stopped";
   action: string;
@@ -66,6 +79,9 @@ export type RunEvent = {
   tool_name: string | null;
   target: string | null;
   evidence: string[];
+  approval_id?: string | null;
+  patch?: string | null;
+  approval_status?: ApprovalStatus | null;
 };
 
 export type RunReport = {
@@ -92,6 +108,8 @@ export type RunSnapshot = {
   session_id: string | null;
   trigger_message_id: string | null;
   intent: IntentBrief | null;
+  approval_mode: "ask" | "auto";
+  approvals: ToolApproval[];
   events: RunEvent[];
   report: RunReport | null;
 };
@@ -301,6 +319,14 @@ export function getRunFileDiff(runId: string, path: string): Promise<FileDiff> {
 
 export function stopRun(runId: string): Promise<RunSnapshot> {
   return postJson<RunSnapshot>(`/api/runs/${runId}/stop`);
+}
+
+export function resolveRunApproval(
+  runId: string,
+  approvalId: string,
+  decision: ApprovalDecision,
+): Promise<RunSnapshot> {
+  return postJson<RunSnapshot>(`/api/runs/${runId}/approvals/${approvalId}`, { decision });
 }
 
 export function acceptRun(runId: string): Promise<RunSnapshot> {

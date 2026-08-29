@@ -43,7 +43,11 @@ ContextManager 阶段替换这一基础实现。
 Plan 会先区分“普通问题”和“规划请求”：普通问题直接回答，只有明确要求设计或拆解改动时
 才生成结构化 IntentBrief，避免把简单提问硬凑成需求清单。
 每次 Agent 运行都会把 `examples/todo-demo` 复制到
-`runtime-data/runs/<运行ID>/todo-demo`，未经“接受全部”不会修改项目当前版本。
+`runtime-data/runs/<运行ID>/todo-demo`，未经“应用到项目”不会修改项目当前版本。
+
+Agent 调用 `apply_patch` 前会展示目标文件、修改原因和真实 Patch，并暂停等待“允许一次”、
+“本轮自动允许”或“拒绝”。拒绝结果会返回 Agent 供其调整；等待期间可以停止运行。
+这里的工具审批只决定能否修改隔离副本，运行结束后仍需单独点击“应用到项目”或“放弃修改”。
 
 Session、消息、Canvas 快照和 Run 快照保存在 `runtime-data/intentflow.db`。刷新页面或重启
 服务后可以恢复历史；服务重启时尚未结束的旧 Run 会被标记为已停止，不会伪装成仍在执行。

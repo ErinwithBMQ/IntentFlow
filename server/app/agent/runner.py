@@ -1,5 +1,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable
+from typing import Literal, Protocol
+from uuid import uuid4
 
 from app.agent.model_client import ModelClient
 from app.agent.models import (
@@ -11,6 +13,7 @@ from app.agent.models import (
     RunEvent,
     RunReport,
     RunResult,
+    ToolApproval,
     ToolCall,
     ToolResult,
 )
@@ -18,6 +21,23 @@ from app.agent.tools import ToolContext, ToolExecution, ToolRegistry
 
 EventSink = Callable[[RunEvent], Awaitable[None]]
 DEFAULT_MAX_STEPS = 12
+ApprovalOutcome = Literal["approved", "rejected", "cancelled"]
+
+
+class ApprovalController(Protocol):
+    def register(self, approval: ToolApproval) -> bool: ...
+
+    async def wait(self, approval_id: str) -> ApprovalOutcome: ...
+
+
+class _AutoApprovalController:
+    def register(self, approval: ToolApproval) -> bool:
+        del approval
+        return False
+
+    async def wait(self, approval_id: str) -> ApprovalOutcome:
+        del approval_id
+        return "approved"
 
 
 async def _ignore_event(event: RunEvent) -> None:
@@ -154,6 +174,7 @@ class AgentRunner:
         *,
         max_steps: int = DEFAULT_MAX_STEPS,
         event_sink: EventSink = _ignore_event,
+        approval_controller: ApprovalController | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
@@ -162,6 +183,7 @@ class AgentRunner:
         self.context = context
         self.max_steps = max_steps
         self.event_sink = event_sink
+        self.approval_controller = approval_controller or _AutoApprovalController()
         self.events: list[RunEvent] = []
 
     async def run(self, intent: IntentBrief) -> RunResult:
@@ -208,8 +230,71 @@ class AgentRunner:
                     return await self._finish_stopped(step, tracker)
 
                 related_ids = tracker.related_ids(call, turn.related_requirement_ids)
+                preview = self.registry.approval_preview(call, self.context)
+                prepared_execution = preview if isinstance(preview, ToolExecution) else None
+                if preview is not None and prepared_execution is None:
+                    approval = ToolApproval(
+                        id=f"approval-{uuid4().hex[:12]}",
+                        tool_call_id=call.id,
+                        tool_name=call.name,
+                        target=preview.target,
+                        reason=call.reason or turn.reason,
+                        patch=preview.patch,
+                        status="approval_required",
+                    )
+                    requires_user = self.approval_controller.register(approval)
+                    if requires_user:
+                        await self._emit(
+                            kind="approval_required",
+                            phase="acting",
+                            status="running",
+                            action=f"等待批准修改 {preview.target}",
+                            reason=approval.reason,
+                            related_requirement_ids=related_ids,
+                            tool_name=call.name,
+                            target=preview.target,
+                            approval_id=approval.id,
+                            patch=preview.patch,
+                            approval_status="approval_required",
+                        )
+                    outcome = await self.approval_controller.wait(approval.id)
+                    if outcome == "cancelled":
+                        return await self._finish_stopped(step, tracker)
+                    if requires_user:
+                        await self._emit(
+                            kind="approval_resolved",
+                            phase="acting",
+                            status="succeeded" if outcome == "approved" else "failed",
+                            action=(
+                                f"已批准修改 {preview.target}"
+                                if outcome == "approved"
+                                else f"已拒绝修改 {preview.target}"
+                            ),
+                            reason="用户已处理本次修改申请",
+                            related_requirement_ids=related_ids,
+                            tool_name=call.name,
+                            target=preview.target,
+                            approval_id=approval.id,
+                            patch=preview.patch,
+                            approval_status=outcome,
+                        )
+                    if outcome == "rejected":
+                        history.append(
+                            ToolResult(
+                                call_id=call.id,
+                                tool_name=call.name,
+                                ok=False,
+                                summary="User rejected this file modification",
+                                output=(
+                                    "The proposed patch was not applied. Adjust the plan or "
+                                    "finish with the requirement unresolved."
+                                ),
+                            )
+                        )
+                        break
+
                 await self._emit_tool_started(call, turn.reason, related_ids)
-                execution = await self.registry.execute(call, self.context)
+                execution = prepared_execution or await self.registry.execute(call, self.context)
                 if call.name == "apply_patch" and execution.result.ok:
                     verification_evidence.clear()
                 if call.name == "run_command":

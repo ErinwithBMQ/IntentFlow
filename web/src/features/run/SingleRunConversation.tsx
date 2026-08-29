@@ -13,11 +13,14 @@ import {
 import { useMemo } from "react";
 
 import type {
+  ApprovalDecision,
   ChangeSummary,
   IntentBrief,
   RunEvent,
   RunSnapshot,
 } from "../../services/api";
+import { SyntaxLine } from "../workspace/SyntaxLine";
+import { diffLineKind, languageFromPath } from "../workspace/workspaceState";
 import { buildConversationActivities, type ConversationAction } from "./conversation";
 
 type SingleRunConversationProps = {
@@ -26,11 +29,13 @@ type SingleRunConversationProps = {
   runError: string;
   changes: ChangeSummary | null;
   reviewAction: "accept" | "discard" | null;
+  toolApprovalAction: { approvalId: string; decision: ApprovalDecision } | null;
   reviewError: string;
   onHighlightSources: (sourceIds: string[]) => void;
   onOpenRelatedFile: (path: string) => void;
   onAccept: () => void;
   onDiscard: () => void;
+  onResolveApproval: (approvalId: string, decision: ApprovalDecision) => void;
   showIntentContext?: boolean;
 };
 
@@ -43,9 +48,14 @@ const requirementStatusText = {
 
 const reviewStatusText = {
   pending: "待审查",
-  accepted: "已接受",
+  accepted: "已应用",
   discarded: "已放弃",
 } as const;
+
+function approvalReasonText(reason: string, target: string | null) {
+  if (/[\u3400-\u9fff]/u.test(reason)) return reason;
+  return `Agent 准备修改 ${target ?? "当前文件"}，请检查下方具体差异。`;
+}
 
 export function SingleRunConversation({
   brief,
@@ -53,11 +63,13 @@ export function SingleRunConversation({
   runError,
   changes,
   reviewAction,
+  toolApprovalAction,
   reviewError,
   onHighlightSources,
   onOpenRelatedFile,
   onAccept,
   onDiscard,
+  onResolveApproval,
   showIntentContext = true,
 }: SingleRunConversationProps) {
   const activities = useMemo(() => buildConversationActivities(run.events), [run.events]);
@@ -65,6 +77,9 @@ export function SingleRunConversation({
     .reverse()
     .flatMap((activity) => [...activity.actions].reverse())
     .find((action) => action.status === "running");
+  const pendingApproval = run.approvals.find(
+    (approval) => approval.status === "approval_required",
+  ) ?? null;
 
   return (
     <div className={`conversation-content ${showIntentContext ? "" : "conversation-content--embedded"}`}>
@@ -114,6 +129,82 @@ export function SingleRunConversation({
 
       {runError && <p className="run-error"><X size={13} />{runError}</p>}
 
+      {pendingApproval && (
+        <section className="conversation-message conversation-message--agent">
+          <div className="conversation-avatar"><FileCode2 size={14} /></div>
+          <div className="conversation-bubble approval-card">
+            <div className="approval-card__heading">
+              <span className="conversation-speaker">等待修改批准</span>
+              <code>{pendingApproval.target ?? pendingApproval.tool_name}</code>
+            </div>
+            <strong>{approvalReasonText(pendingApproval.reason, pendingApproval.target)}</strong>
+            <div
+              className="diff-lines approval-patch"
+              aria-label={`${pendingApproval.target ?? "文件"} 待审批 Diff`}
+            >
+              {pendingApproval.patch.split(/\r?\n/).filter((line, index, lines) => (
+                line.length > 0 || index < lines.length - 1
+              )).map((line, index) => {
+                const kind = diffLineKind(line);
+                const hasCodeBody = kind === "addition" || kind === "deletion" || kind === "context";
+                return (
+                  <div className={`diff-line diff-line--${kind}`} key={`${index}-${line}`}>
+                    <span>{index + 1}</span>
+                    <code>
+                      {hasCodeBody ? (
+                        <>
+                          <span className="diff-prefix">{line.slice(0, 1) || " "}</span>
+                          <SyntaxLine
+                            text={line.slice(1)}
+                            language={languageFromPath(pendingApproval.target ?? "")}
+                          />
+                        </>
+                      ) : line || " "}
+                    </code>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="approval-actions">
+              <button
+                type="button"
+                className="review-button review-button--discard"
+                disabled={toolApprovalAction !== null}
+                onClick={() => onResolveApproval(pendingApproval.id, "reject")}
+              >
+                {toolApprovalAction?.approvalId === pendingApproval.id
+                  && toolApprovalAction.decision === "reject"
+                  && <LoaderCircle className="spin" size={12} />}
+                拒绝
+              </button>
+              <button
+                type="button"
+                className="review-button"
+                disabled={toolApprovalAction !== null}
+                onClick={() => onResolveApproval(pendingApproval.id, "allow_once")}
+              >
+                {toolApprovalAction?.approvalId === pendingApproval.id
+                  && toolApprovalAction.decision === "allow_once"
+                  && <LoaderCircle className="spin" size={12} />}
+                允许一次
+              </button>
+              <button
+                type="button"
+                className="review-button review-button--accept"
+                disabled={toolApprovalAction !== null}
+                onClick={() => onResolveApproval(pendingApproval.id, "allow_for_run")}
+              >
+                {toolApprovalAction?.approvalId === pendingApproval.id
+                  && toolApprovalAction.decision === "allow_for_run" && (
+                  <LoaderCircle className="spin" size={12} />
+                )}
+                本轮自动允许
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
       <section className="conversation-message conversation-message--agent">
         <div className="conversation-avatar"><Sparkles size={14} /></div>
         <div className="conversation-bubble conversation-bubble--progress">
@@ -161,9 +252,11 @@ export function SingleRunConversation({
             <div className="conversation-live-status" role="status" aria-live="polite">
               <LoaderCircle className="spin" size={15} />
               <div>
-                <strong>Agent 运行中</strong>
+                <strong>{pendingApproval ? "Agent 等待批准" : "Agent 运行中"}</strong>
                 <span>
-                  {activeAction
+                  {pendingApproval
+                    ? `需要确认对 ${pendingApproval.target ?? "文件"} 的修改`
+                    : activeAction
                     ? `正在执行：${activeAction.action || activeAction.toolName || "工具调用"}`
                     : "正在思考下一步…"}
                 </span>
@@ -260,7 +353,7 @@ export function SingleRunConversation({
                 </strong>
                 <p>
                   {run.status === "completed"
-                    ? "接受会将本次变更写回项目当前版本；放弃只记录决定，Agent 修改版本和 Diff 仍会保留。"
+                    ? "应用会将本次变更写回项目当前版本；放弃只记录决定，Agent 修改版本和 Diff 仍会保留。"
                     : "本次运行没有完整完成，不能接受修改，但可以保留记录并放弃本次结果。"}
                 </p>
                 <div className="review-actions">
@@ -281,7 +374,7 @@ export function SingleRunConversation({
                       onClick={onAccept}
                     >
                       {reviewAction === "accept" && <LoaderCircle className="spin" size={12} />}
-                      接受全部
+                      应用到项目
                     </button>
                   )}
                 </div>

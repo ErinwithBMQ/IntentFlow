@@ -94,6 +94,10 @@ class SendSessionMessageResponse(BaseModel):
     run: RunSnapshot | None = None
 
 
+class ResolveApprovalRequest(BaseModel):
+    decision: Literal["allow_once", "allow_for_run", "reject"]
+
+
 @app.get("/api/health", response_model=HealthResponse)
 async def get_health() -> HealthResponse:
     return HealthResponse()
@@ -470,6 +474,23 @@ async def stop_run(run_id: str) -> RunSnapshot:
         return await run_manager.stop(run_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="运行记录不存在") from error
+
+
+@app.post(
+    "/api/runs/{run_id}/approvals/{approval_id}",
+    response_model=RunSnapshot,
+)
+async def resolve_run_approval(
+    run_id: str,
+    approval_id: str,
+    request: ResolveApprovalRequest,
+) -> RunSnapshot:
+    try:
+        return run_manager.resolve_approval(run_id, approval_id, request.decision)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from error
+    except RunReviewError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @app.post("/api/runs/{run_id}/accept", response_model=RunSnapshot)

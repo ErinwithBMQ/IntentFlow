@@ -16,6 +16,7 @@ import {
   getRunTree,
   getSession,
   listSessions,
+  resolveRunApproval,
   sendSessionMessage,
   stopRun,
   type IntentCanvas,
@@ -172,6 +173,36 @@ describe("getHealth", () => {
       2,
       "/api/runs/run-1/discard",
       expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("resolves a pending tool approval", async () => {
+    const snapshot = {
+      id: "run-1",
+      status: "running",
+      review_status: "pending",
+      approval_mode: "auto",
+      approvals: [],
+      workspace_relative_path: "runtime-data/runs/run-1/todo-demo",
+      events: [],
+      report: null,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(snapshot), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await resolveRunApproval("run-1", "approval-1", "allow_for_run");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/runs/run-1/approvals/approval-1",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ decision: "allow_for_run" }),
+      }),
     );
   });
 

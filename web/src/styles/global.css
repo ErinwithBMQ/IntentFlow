@@ -139,6 +139,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .session-message__markdown table { width: 100%; border-collapse: collapse; }
 .session-message__markdown th,
 .session-message__markdown td { padding: 5px 7px; border: 1px solid #d9dce6; text-align: left; vertical-align: top; }
+.approval-card { gap: 9px; border-color: #d7c27b; background: #fffdf4; }
+.approval-card__heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.approval-card__heading code { max-width: 65%; overflow: hidden; color: #795d16; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.diff-lines.approval-patch { min-height: auto; max-height: 320px; padding: 6px 0; border: 1px solid #dfddd5; border-radius: 5px; font-size: 11px; line-height: 1.55; }
+.diff-lines.approval-patch .diff-line { grid-template-columns: 38px minmax(0, 1fr); }
+.approval-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
 .session-intent-brief { padding: 9px; display: grid; gap: 5px; border-left: 2px solid #6f8ae6; color: #626965; background: #f6f7fb; }
 .session-intent-brief > strong { color: #27302b; font-size: 12px; }
 .session-intent-brief > span { font-size: 11px; line-height: 1.5; }

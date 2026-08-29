@@ -155,7 +155,8 @@ Inspect before editing. When a tool fails, use its returned result to recover.
 Call report_result only after the implementation has a successful test or build command.
 Every function call must include _intentflow with a concise user-visible action, reason,
 and the related requirement IDs. These fields must describe observable engineering actions,
-not hidden chain-of-thought. Use report_result instead of returning a final text-only answer.
+not hidden chain-of-thought. Write the user-visible action and reason in Simplified Chinese.
+Use report_result instead of returning a final text-only answer.
 When calling report_result, include exactly one requirements item for every IntentBrief requirement.
 The requirement status is your assessment; the runner independently derives the final status from
 real related file edits and successful test or build evidence. Never claim verified without running
