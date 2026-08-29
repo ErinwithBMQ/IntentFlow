@@ -91,11 +91,56 @@ export type RunSnapshot = {
   report: RunReport | null;
 };
 
+export type WorkspaceScope = "project" | "run";
+
+export type WorkspaceEntry = {
+  name: string;
+  path: string;
+  kind: "directory" | "file";
+  children: WorkspaceEntry[];
+};
+
+export type WorkspaceTree = {
+  root_name: string;
+  entries: WorkspaceEntry[];
+  truncated: boolean;
+};
+
+export type WorkspaceFile = {
+  path: string;
+  content: string;
+  size: number;
+  language: string;
+};
+
+export type ChangeKind = "added" | "modified" | "deleted";
+
+export type FileChange = {
+  path: string;
+  status: ChangeKind;
+  additions: number;
+  deletions: number;
+  viewable: boolean;
+  unavailable_reason: "binary" | "invalid_utf8" | "too_large" | null;
+};
+
+export type ChangeSummary = {
+  files: FileChange[];
+  changed_files: number;
+  additions: number;
+  deletions: number;
+};
+
+export type FileDiff = FileChange & {
+  diff: string;
+};
+
 async function requestJson<T>(path: string): Promise<T> {
   const response = await fetch(path);
 
   if (!response.ok) {
-    throw new Error(`请求失败：${response.status}`);
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? `请求失败：${response.status}`);
   }
 
   return (await response.json()) as T;
@@ -107,6 +152,14 @@ export function getHealth(): Promise<HealthResponse> {
 
 export function getProject(): Promise<ProjectResponse> {
   return requestJson<ProjectResponse>("/api/project");
+}
+
+export function getProjectTree(): Promise<WorkspaceTree> {
+  return requestJson<WorkspaceTree>("/api/project/tree");
+}
+
+export function getProjectFile(path: string): Promise<WorkspaceFile> {
+  return requestJson<WorkspaceFile>(withPath("/api/project/file", path));
 }
 
 export async function compileIntent(
@@ -148,6 +201,22 @@ export function getRun(runId: string): Promise<RunSnapshot> {
   return requestJson<RunSnapshot>(`/api/runs/${runId}`);
 }
 
+export function getRunTree(runId: string): Promise<WorkspaceTree> {
+  return requestJson<WorkspaceTree>(`/api/runs/${runId}/tree`);
+}
+
+export function getRunFile(runId: string, path: string): Promise<WorkspaceFile> {
+  return requestJson<WorkspaceFile>(withPath(`/api/runs/${runId}/file`, path));
+}
+
+export function getRunChanges(runId: string): Promise<ChangeSummary> {
+  return requestJson<ChangeSummary>(`/api/runs/${runId}/changes`);
+}
+
+export function getRunFileDiff(runId: string, path: string): Promise<FileDiff> {
+  return requestJson<FileDiff>(withPath(`/api/runs/${runId}/diff`, path));
+}
+
 export function stopRun(runId: string): Promise<RunSnapshot> {
   return postJson<RunSnapshot>(`/api/runs/${runId}/stop`);
 }
@@ -172,4 +241,8 @@ export function subscribeToRun(
     onError();
   };
   return () => source.close();
+}
+
+function withPath(endpoint: string, path: string): string {
+  return `${endpoint}?${new URLSearchParams({ path }).toString()}`;
 }

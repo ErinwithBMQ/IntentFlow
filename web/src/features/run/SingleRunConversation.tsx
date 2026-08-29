@@ -20,6 +20,7 @@ type SingleRunConversationProps = {
   run: RunSnapshot;
   runError: string;
   onHighlightSources: (sourceIds: string[]) => void;
+  onOpenRelatedFile: (path: string) => void;
 };
 
 const requirementStatusText = {
@@ -34,6 +35,7 @@ export function SingleRunConversation({
   run,
   runError,
   onHighlightSources,
+  onOpenRelatedFile,
 }: SingleRunConversationProps) {
   const activities = useMemo(() => buildConversationActivities(run.events), [run.events]);
 
@@ -114,7 +116,11 @@ export function SingleRunConversation({
                         </summary>
                         <div className="conversation-action-list">
                           {activity.actions.map((action) => (
-                            <ConversationActionItem action={action} key={action.id} />
+                            <ConversationActionItem
+                              action={action}
+                              key={action.id}
+                              onOpenRelatedFile={onOpenRelatedFile}
+                            />
                           ))}
                         </div>
                       </details>
@@ -173,7 +179,14 @@ export function SingleRunConversation({
                           <ChevronDown size={12} />
                         </summary>
                         {result.related_files.map((file) => (
-                          <code key={file}><FileCode2 size={11} />{file}</code>
+                          <button
+                            className="related-file-link"
+                            type="button"
+                            key={file}
+                            onClick={() => onOpenRelatedFile(file)}
+                          >
+                            <FileCode2 size={11} />{file}
+                          </button>
                         ))}
                         {result.evidence.map((item) => (
                           <small key={item}><Check size={11} />{item}</small>
@@ -193,19 +206,35 @@ export function SingleRunConversation({
   );
 }
 
-function ConversationActionItem({ action }: { action: ConversationAction }) {
+function ConversationActionItem({
+  action,
+  onOpenRelatedFile,
+}: {
+  action: ConversationAction;
+  onOpenRelatedFile: (path: string) => void;
+}) {
   const isCommand = action.toolName === "run_command";
+  const isFile = action.toolName === "read_file" || action.toolName === "apply_patch";
+  const target = action.target;
   return (
     <div className={`conversation-action conversation-action--${action.status}`}>
       <StatusIcon status={action.status} />
       <div>
         <strong>{action.action}</strong>
-        {action.target && (
+        {target && (isFile ? (
+          <button
+            className="conversation-file-link"
+            type="button"
+            onClick={() => onOpenRelatedFile(target)}
+          >
+            <FileCode2 size={10} />{target}
+          </button>
+        ) : (
           <code>
             {isCommand ? <TerminalSquare size={10} /> : <FileCode2 size={10} />}
-            {action.target}
+            {target}
           </code>
-        )}
+        ))}
         {action.reason && <p>{action.reason}</p>}
         {action.evidence.map((item) => <small key={item}>{item}</small>)}
       </div>

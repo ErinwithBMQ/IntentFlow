@@ -1,6 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { compileIntent, createRun, getHealth, stopRun, type IntentCanvas } from "./api";
+import {
+  compileIntent,
+  createRun,
+  getHealth,
+  getProjectFile,
+  getProjectTree,
+  getRunChanges,
+  getRunFile,
+  getRunFileDiff,
+  getRunTree,
+  stopRun,
+  type IntentCanvas,
+} from "./api";
 
 describe("getHealth", () => {
   afterEach(() => {
@@ -119,5 +131,66 @@ describe("getHealth", () => {
       "/api/runs/run-1/stop",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("requests project and run workspace facts with encoded paths", async () => {
+    const tree = { root_name: "todo-demo", entries: [], truncated: false };
+    const file = {
+      path: "src/tasks file.js",
+      content: "export const tasks = [];",
+      size: 24,
+      language: "javascript",
+    };
+    const changes = { files: [], changed_files: 0, additions: 0, deletions: 0 };
+    const diff = {
+      path: "src/tasks file.js",
+      status: "modified",
+      additions: 1,
+      deletions: 1,
+      viewable: true,
+      unavailable_reason: null,
+      diff: "--- a/src/tasks file.js\n+++ b/src/tasks file.js\n",
+    };
+    const payloads = [tree, file, tree, file, changes, diff];
+    const fetchMock = vi.fn().mockImplementation(() => {
+      const payload = payloads.shift();
+      return Promise.resolve(
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getProjectTree();
+    await getProjectFile("src/tasks file.js");
+    await getRunTree("run-1");
+    await getRunFile("run-1", "src/tasks file.js");
+    await getRunChanges("run-1");
+    await getRunFileDiff("run-1", "src/tasks file.js");
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/project/tree",
+      "/api/project/file?path=src%2Ftasks+file.js",
+      "/api/runs/run-1/tree",
+      "/api/runs/run-1/file?path=src%2Ftasks+file.js",
+      "/api/runs/run-1/changes",
+      "/api/runs/run-1/diff?path=src%2Ftasks+file.js",
+    ]);
+  });
+
+  it("surfaces a backend file error without exposing a generic status only", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ detail: "二进制文件不能作为文本查看" }), {
+          status: 415,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(getProjectFile("image.bin")).rejects.toThrow("二进制文件不能作为文本查看");
   });
 });

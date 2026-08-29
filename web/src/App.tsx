@@ -14,6 +14,8 @@ import {
   ArrowRight,
   Check,
   CircleDot,
+  FileCode2,
+  GitCompareArrows,
   Link2,
   LoaderCircle,
   Play,
@@ -33,18 +35,37 @@ import {
 } from "./features/canvas/canvasState";
 import { NoteNode, NoteNodeProvider } from "./features/canvas/NoteNode";
 import { SingleRunConversation } from "./features/run/SingleRunConversation";
+import { CodeWorkspace, type OpenWorkspaceFile } from "./features/workspace/CodeWorkspace";
+import { DiffWorkspace } from "./features/workspace/DiffWorkspace";
+import { ProjectExplorer } from "./features/workspace/ProjectExplorer";
+import {
+  relatedFileDestination,
+  workspaceFileKey,
+  type WorkspaceTab,
+} from "./features/workspace/workspaceState";
 import {
   compileIntent,
   createRun,
   getHealth,
   getProject,
+  getProjectFile,
+  getProjectTree,
   getRun,
+  getRunChanges,
+  getRunFile,
+  getRunFileDiff,
+  getRunTree,
   stopRun,
   subscribeToRun,
   type CanvasNoteLabel,
+  type ChangeSummary,
+  type FileChange,
+  type FileDiff,
   type IntentBrief,
   type ProjectResponse,
   type RunSnapshot,
+  type WorkspaceScope,
+  type WorkspaceTree,
 } from "./services/api";
 
 type ConnectionState = "checking" | "connected" | "failed";
@@ -85,7 +106,21 @@ export function App() {
   const [run, setRun] = useState<RunSnapshot | null>(null);
   const [runBrief, setRunBrief] = useState<IntentBrief | null>(null);
   const [runError, setRunError] = useState("");
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("canvas");
+  const [projectTree, setProjectTree] = useState<WorkspaceTree | null>(null);
+  const [runTree, setRunTree] = useState<WorkspaceTree | null>(null);
+  const [workspaceError, setWorkspaceError] = useState("");
+  const [openFiles, setOpenFiles] = useState<OpenWorkspaceFile[]>([]);
+  const [activeFileKey, setActiveFileKey] = useState<string | null>(null);
+  const [changes, setChanges] = useState<ChangeSummary | null>(null);
+  const [activeDiffPath, setActiveDiffPath] = useState<string | null>(null);
+  const [activeDiff, setActiveDiff] = useState<FileDiff | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState("");
   const closeRunStream = useRef<(() => void) | null>(null);
+  const diffRequestSequence = useRef(0);
+  const workspaceTabRef = useRef<WorkspaceTab>("canvas");
+  const activeDiffPathRef = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -95,9 +130,17 @@ export function App() {
         if (active && health.status === "ok") {
           setConnection("connected");
           setProject(projectInfo);
+          try {
+            setProjectTree(await getProjectTree());
+          } catch (error) {
+            setWorkspaceError(errorMessage(error, "无法读取项目文件"));
+          }
         }
-      } catch {
-        if (active) setConnection("failed");
+      } catch (error) {
+        if (active) {
+          setConnection("failed");
+          setWorkspaceError(errorMessage(error, "无法读取项目文件"));
+        }
       }
     }
     void bootstrap();
@@ -111,6 +154,11 @@ export function App() {
   }, [edges, nodes, supplementalText]);
 
   useEffect(() => () => closeRunStream.current?.(), []);
+
+  useEffect(() => {
+    workspaceTabRef.current = workspaceTab;
+    activeDiffPathRef.current = activeDiffPath;
+  }, [activeDiffPath, workspaceTab]);
 
   const resetCompilation = useCallback(() => {
     setBrief(null);
@@ -199,10 +247,27 @@ export function App() {
     resetCompilation();
   }
 
+  function clearRunReview() {
+    diffRequestSequence.current += 1;
+    activeDiffPathRef.current = null;
+    setRunTree(null);
+    setChanges(null);
+    setActiveDiffPath(null);
+    setActiveDiff(null);
+    setDiffError("");
+    setDiffLoading(false);
+    setOpenFiles((currentFiles) => currentFiles.filter((file) => file.scope === "project"));
+    if (activeFileKey?.startsWith("run:")) {
+      setActiveFileKey(openFiles.find((file) => file.scope === "project")?.key ?? null);
+    }
+  }
+
   async function handleCompile(compiler: CompilerKind = "ai") {
     setRun(null);
     setRunBrief(null);
     setRunError("");
+    clearRunReview();
+    setWorkspaceTab("canvas");
     setCompileState("compiling");
     setCompileError("");
     setBrief(null);
@@ -225,9 +290,37 @@ export function App() {
 
   async function refreshRun(runId: string) {
     try {
-      setRun(await getRun(runId));
+      const snapshot = await getRun(runId);
+      setRun(snapshot);
+      await loadRunFacts(snapshot);
     } catch (error) {
       setRunError(error instanceof Error ? error.message : "无法读取运行结果");
+    }
+  }
+
+  async function loadRunFacts(snapshot: RunSnapshot) {
+    setWorkspaceError("");
+    try {
+      setRunTree(await getRunTree(snapshot.id));
+    } catch (error) {
+      setWorkspaceError(errorMessage(error, "无法读取运行副本"));
+    }
+    if (snapshot.status === "running") return;
+    try {
+      const summary = await getRunChanges(snapshot.id);
+      setChanges(summary);
+      const selectedChange = summary.files.find(
+        (change) => change.path === activeDiffPathRef.current,
+      )
+        ?? summary.files[0]
+        ?? null;
+      activeDiffPathRef.current = selectedChange?.path ?? null;
+      setActiveDiffPath(selectedChange?.path ?? null);
+      if (workspaceTabRef.current === "diff" && selectedChange) {
+        await openRunDiff(snapshot.id, selectedChange);
+      }
+    } catch (error) {
+      setDiffError(errorMessage(error, "无法读取变更摘要"));
     }
   }
 
@@ -235,10 +328,12 @@ export function App() {
     if (!brief) return;
     setRunError("");
     closeRunStream.current?.();
+    clearRunReview();
     try {
       const created = await createRun(brief);
       setRun(created);
       setRunBrief(brief);
+      void loadRunFacts(created);
       closeRunStream.current = subscribeToRun(
         created.id,
         (event) => {
@@ -276,16 +371,140 @@ export function App() {
     );
   }
 
+  async function openWorkspaceFile(scope: WorkspaceScope, path: string) {
+    const key = workspaceFileKey(scope, path);
+    setWorkspaceTab("code");
+    setActiveFileKey(key);
+    const existing = openFiles.find((file) => file.key === key);
+    if (existing?.state === "ready" || existing?.state === "loading") return;
+
+    const loadingFile: OpenWorkspaceFile = {
+      key,
+      scope,
+      path,
+      state: "loading",
+      file: null,
+      error: "",
+    };
+    setOpenFiles((currentFiles) => {
+      const exists = currentFiles.some((file) => file.key === key);
+      return exists
+        ? currentFiles.map((file) => file.key === key ? loadingFile : file)
+        : [...currentFiles, loadingFile];
+    });
+
+    try {
+      const file = scope === "project"
+        ? await getProjectFile(path)
+        : run
+          ? await getRunFile(run.id, path)
+          : null;
+      if (!file) throw new Error("当前没有可读取的运行副本");
+      setOpenFiles((currentFiles) => currentFiles.map((item) => (
+        item.key === key ? { ...item, state: "ready", file, error: "" } : item
+      )));
+    } catch (error) {
+      setOpenFiles((currentFiles) => currentFiles.map((item) => (
+        item.key === key
+          ? { ...item, state: "error", file: null, error: errorMessage(error, "文件读取失败") }
+          : item
+      )));
+    }
+  }
+
+  function closeWorkspaceFile(key: string) {
+    setOpenFiles((currentFiles) => {
+      const closingIndex = currentFiles.findIndex((file) => file.key === key);
+      const remaining = currentFiles.filter((file) => file.key !== key);
+      if (activeFileKey === key) {
+        const nextFile = remaining[Math.max(0, closingIndex - 1)] ?? remaining[0] ?? null;
+        setActiveFileKey(nextFile?.key ?? null);
+      }
+      return remaining;
+    });
+  }
+
+  async function openRunDiff(runId: string, change: FileChange) {
+    const requestSequence = diffRequestSequence.current + 1;
+    diffRequestSequence.current = requestSequence;
+    workspaceTabRef.current = "diff";
+    activeDiffPathRef.current = change.path;
+    setWorkspaceTab("diff");
+    setActiveDiffPath(change.path);
+    setActiveDiff(null);
+    setDiffError("");
+    if (!change.viewable) {
+      setDiffLoading(false);
+      return;
+    }
+
+    setDiffLoading(true);
+    try {
+      const loadedDiff = await getRunFileDiff(runId, change.path);
+      if (diffRequestSequence.current === requestSequence) setActiveDiff(loadedDiff);
+    } catch (error) {
+      if (diffRequestSequence.current === requestSequence) {
+        setDiffError(errorMessage(error, "Diff 读取失败"));
+      }
+    } finally {
+      if (diffRequestSequence.current === requestSequence) setDiffLoading(false);
+    }
+  }
+
+  function selectWorkspaceTab(tab: WorkspaceTab) {
+    workspaceTabRef.current = tab;
+    setWorkspaceTab(tab);
+    if (tab !== "diff" || !run || run.status === "running") return;
+    const selectedChange = changes?.files.find((change) => change.path === activeDiffPath)
+      ?? changes?.files[0];
+    if (selectedChange && activeDiff?.path !== selectedChange.path) {
+      void openRunDiff(run.id, selectedChange);
+    }
+  }
+
+  async function openRelatedFile(path: string) {
+    if (!run) {
+      await openWorkspaceFile("project", path);
+      return;
+    }
+    let currentChanges = changes;
+    if (run.status !== "running" && !currentChanges) {
+      try {
+        currentChanges = await getRunChanges(run.id);
+        setChanges(currentChanges);
+      } catch (error) {
+        setDiffError(errorMessage(error, "无法判断文件变更状态"));
+      }
+    }
+    if (relatedFileDestination(currentChanges, path) === "diff") {
+      const change = currentChanges?.files.find((item) => item.path === path);
+      if (change) await openRunDiff(run.id, change);
+      return;
+    }
+    await openWorkspaceFile("run", path);
+  }
+
   const statusText = {
     checking: "正在连接后端",
     connected: "后端已连接",
     failed: "后端连接失败",
   }[connection];
   const isRunning = run?.status === "running";
-  const activePhaseCount = isRunning ? 4 : brief ? 2 : 1;
+  const activePhaseCount = run ? 4 : brief ? 2 : 1;
   const runStatusText = run
     ? { running: "运行中", completed: "已完成", failed: "失败", stopped: "已停止" }[run.status]
     : "待运行";
+  const activeOpenFile = openFiles.find((file) => file.key === activeFileKey) ?? null;
+  const workspaceLabel = workspaceTab === "canvas"
+    ? "Intent Canvas"
+    : workspaceTab === "diff"
+      ? "本次运行 Diff"
+      : activeOpenFile
+        ? `${activeOpenFile.scope === "project" ? "原始项目" : "运行副本"} / ${activeOpenFile.path}`
+        : "代码查看";
+  const verifiedRequirements = run?.report?.requirement_results.filter(
+    (result) => result.status === "verified",
+  ).length ?? 0;
 
   return (
     <main className="workspace-shell">
@@ -337,44 +556,110 @@ export function App() {
       </section>
 
       <div className="workspace-grid">
-        <aside className="tool-panel">
-          <div className="panel-heading"><span>表达工具</span><span className="stage-label">自由输入</span></div>
-          <button className="tool-row tool-row--primary" type="button" onClick={addNote}>
-            <Plus size={16} />添加便签
-          </button>
-          <button className="tool-row" type="button" onClick={restoreExample}>
-            <RotateCcw size={15} />恢复 Todo 示例
-          </button>
-          <label className="tool-field">
-            <span><Link2 size={13} /> 新连线文字</span>
-            <input value={connectionLabel} placeholder="例如：然后、参考" onChange={(event) => setConnectionLabel(event.target.value)} />
-          </label>
-          <label className="tool-field tool-field--grow">
-            <span>补充说明</span>
-            <textarea
-              value={supplementalText}
-              placeholder="还有一些不好放进便签的话……"
-              onChange={(event) => {
-                setSupplementalText(event.target.value);
-                resetCompilation();
-              }}
-            />
-          </label>
-          <p className="panel-note">标签、连线和顺序都不是必填。先把想法放上来，结构交给 AI。</p>
-        </aside>
+        <ProjectExplorer
+          projectTree={projectTree}
+          runTree={runTree}
+          runId={run?.id ?? null}
+          activeFileKey={activeFileKey}
+          error={workspaceError}
+          onOpenFile={(scope, path) => void openWorkspaceFile(scope, path)}
+        />
 
-        <section className="canvas-panel">
-          <div className="canvas-header">
-            <span>Intent Canvas</span><span>{nodes.length} 张便签 · {edges.length} 条关系 · 已自动保存</span>
-          </div>
-          <NoteNodeProvider callbacks={callbacks}>
-            <ReactFlow<NoteNodeType>
-              fitView nodes={nodes} edges={edges} nodeTypes={nodeTypes} minZoom={0.55} maxZoom={1.45}
-              onConnect={onConnect} onNodesChange={handleNodesChange} onEdgesChange={handleEdgesChange}
+        <section className="main-workspace">
+          <div className="workspace-tabs" role="tablist" aria-label="主工作区">
+            <button
+              className={workspaceTab === "canvas" ? "workspace-tab--active" : ""}
+              type="button"
+              role="tab"
+              onClick={() => selectWorkspaceTab("canvas")}
             >
-              <Background color="#d6d5cf" gap={20} size={1} variant={BackgroundVariant.Dots} />
-            </ReactFlow>
-          </NoteNodeProvider>
+              <CircleDot size={13} />Canvas
+            </button>
+            <button
+              className={workspaceTab === "code" ? "workspace-tab--active" : ""}
+              type="button"
+              role="tab"
+              onClick={() => selectWorkspaceTab("code")}
+            >
+              <FileCode2 size={13} />代码
+              {openFiles.length > 0 && <span>{openFiles.length}</span>}
+            </button>
+            <button
+              className={workspaceTab === "diff" ? "workspace-tab--active" : ""}
+              type="button"
+              role="tab"
+              onClick={() => selectWorkspaceTab("diff")}
+            >
+              <GitCompareArrows size={13} />Diff
+              {changes && <span>{changes.changed_files}</span>}
+            </button>
+          </div>
+          <div className="workspace-view">
+            {workspaceTab === "canvas" ? (
+              <div className="canvas-workspace">
+                <div className="canvas-toolbar">
+                  <button type="button" onClick={addNote}><Plus size={13} />添加便签</button>
+                  <button type="button" onClick={restoreExample}><RotateCcw size={13} />恢复示例</button>
+                  <label>
+                    <span><Link2 size={12} />连线文字</span>
+                    <input
+                      value={connectionLabel}
+                      placeholder="例如：然后、参考"
+                      onChange={(event) => setConnectionLabel(event.target.value)}
+                    />
+                  </label>
+                  <label className="canvas-toolbar__supplement">
+                    <span>补充说明</span>
+                    <input
+                      value={supplementalText}
+                      placeholder="还有一些不好放进便签的话……"
+                      onChange={(event) => {
+                        setSupplementalText(event.target.value);
+                        resetCompilation();
+                      }}
+                    />
+                  </label>
+                </div>
+                <div className="canvas-panel">
+                  <div className="canvas-header">
+                    <span>Intent Canvas</span>
+                    <span>{nodes.length} 张便签 · {edges.length} 条关系 · 已自动保存</span>
+                  </div>
+                  <NoteNodeProvider callbacks={callbacks}>
+                    <ReactFlow<NoteNodeType>
+                      fitView nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+                      minZoom={0.55} maxZoom={1.45}
+                      onConnect={onConnect} onNodesChange={handleNodesChange}
+                      onEdgesChange={handleEdgesChange}
+                    >
+                      <Background
+                        color="#d6d5cf" gap={20} size={1}
+                        variant={BackgroundVariant.Dots}
+                      />
+                    </ReactFlow>
+                  </NoteNodeProvider>
+                </div>
+              </div>
+            ) : workspaceTab === "code" ? (
+              <CodeWorkspace
+                files={openFiles}
+                activeFileKey={activeFileKey}
+                onSelectFile={setActiveFileKey}
+                onCloseFile={closeWorkspaceFile}
+              />
+            ) : (
+              <DiffWorkspace
+                changes={changes}
+                activePath={activeDiffPath}
+                diff={activeDiff}
+                loading={diffLoading}
+                error={diffError}
+                onSelectChange={(change) => {
+                  if (run) void openRunDiff(run.id, change);
+                }}
+              />
+            )}
+          </div>
         </section>
 
         <aside className="run-panel intent-panel">
@@ -399,6 +684,7 @@ export function App() {
                 run={run}
                 runError={runError}
                 onHighlightSources={highlightSources}
+                onOpenRelatedFile={(path) => void openRelatedFile(path)}
               />
             )
           ) : !brief ? (
@@ -449,11 +735,30 @@ export function App() {
       </div>
 
       <footer className="statusbar">
-        <span>Intent Brief：{brief ? `${brief.requirements.length} 项需求` : "尚未生成"}</span>
+        <span>工作区：{workspaceLabel}</span>
         <span className="statusbar-divider" />
-        <span>Target：{run?.workspace_relative_path ?? project?.relativePath ?? "examples/todo-demo"}</span>
-        <span className="statusbar-spacer" /><span>v0.3.0 · agent runtime</span>
+        <span>运行：{runStatusText}</span>
+        <span className="statusbar-divider" />
+        <button
+          className="statusbar-link"
+          type="button"
+          disabled={!changes}
+          onClick={() => selectWorkspaceTab("diff")}
+        >
+          变更：{changes ? `${changes.changed_files} 个文件` : "待生成"}
+        </button>
+        <span className="statusbar-divider" />
+        <span>
+          验证：{run?.report
+            ? `${verifiedRequirements}/${run.report.requirement_results.length} 项已验证`
+            : "待验证"}
+        </span>
+        <span className="statusbar-spacer" /><span>v0.4.0 · workspace review</span>
       </footer>
     </main>
   );
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
 }
