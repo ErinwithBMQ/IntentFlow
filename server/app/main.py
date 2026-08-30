@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import Literal
 
@@ -98,8 +99,16 @@ class SendSessionMessageResponse(BaseModel):
     run: RunSnapshot | None = None
 
 
+class CancelSessionActivityResponse(BaseModel):
+    cancelled: bool
+    kind: Literal["message", "run", "none"]
+
+
 class ResolveApprovalRequest(BaseModel):
     decision: Literal["allow_once", "allow_for_run", "reject"]
+
+
+active_message_tasks: dict[str, asyncio.Task[SendSessionMessageResponse]] = {}
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -140,6 +149,8 @@ async def delete_session(session_id: str) -> Response:
     detail = session_store.get_detail(session_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="对话不存在")
+    if session_id in active_message_tasks:
+        raise HTTPException(status_code=409, detail="正在处理消息，请先中断后再删除对话")
     if any(run.status == "running" for run in detail.runs):
         raise HTTPException(status_code=409, detail="运行中的对话不能删除，请先停止 Agent")
 
@@ -153,12 +164,7 @@ async def delete_session(session_id: str) -> Response:
     return Response(status_code=204)
 
 
-@app.post(
-    "/api/sessions/{session_id}/messages",
-    response_model=SendSessionMessageResponse,
-    status_code=201,
-)
-async def send_session_message(
+async def _process_session_message(
     session_id: str,
     request: SendSessionMessageRequest,
 ) -> SendSessionMessageResponse:
@@ -271,7 +277,7 @@ async def send_session_message(
             session_id,
             "assistant",
             "plan",
-            f"我根据当前项目整理了《{brief.title}》计划。",
+            f"收到，我先根据当前项目整理了一份《{brief.title}》计划。",
             intent=brief,
         )
         return SendSessionMessageResponse(
@@ -316,7 +322,10 @@ async def send_session_message(
         session_id,
         "assistant",
         "agent",
-        f"已整理为《{brief.title}》，开始在隔离工作区执行。",
+        (
+            f"收到，我来处理《{brief.title}》。我会在隔离工作区中修改并验证，"
+            "完成后你可以查看代码和 Diff，再决定是否应用到项目。"
+        ),
         run_id=run.id,
         intent=brief,
     )
@@ -325,6 +334,81 @@ async def send_session_message(
         assistant_message=assistant_message,
         run=run,
     )
+
+
+@app.post(
+    "/api/sessions/{session_id}/messages",
+    response_model=SendSessionMessageResponse,
+    status_code=201,
+)
+async def send_session_message(
+    session_id: str,
+    request: SendSessionMessageRequest,
+) -> SendSessionMessageResponse:
+    existing_task = active_message_tasks.get(session_id)
+    if existing_task is not None and not existing_task.done():
+        raise HTTPException(status_code=409, detail="当前消息仍在处理中")
+
+    task = asyncio.create_task(_process_session_message(session_id, request))
+    active_message_tasks[session_id] = task
+    try:
+        return await task
+    except asyncio.CancelledError:
+        detail = session_store.get_detail(session_id)
+        latest_user_message = next(
+            (
+                message
+                for message in reversed(detail.messages if detail else [])
+                if message.role == "user"
+            ),
+            None,
+        )
+        if latest_user_message is None:
+            raise HTTPException(status_code=409, detail="消息处理已中断") from None
+        assistant_message = session_store.add_message(
+            session_id,
+            "assistant",
+            latest_user_message.mode,
+            "已中断本次处理，没有启动新的 Agent 运行。",
+        )
+        return SendSessionMessageResponse(
+            user_message=latest_user_message,
+            assistant_message=assistant_message,
+        )
+    finally:
+        if active_message_tasks.get(session_id) is task:
+            active_message_tasks.pop(session_id, None)
+
+
+@app.post(
+    "/api/sessions/{session_id}/cancel",
+    response_model=CancelSessionActivityResponse,
+)
+async def cancel_session_activity(session_id: str) -> CancelSessionActivityResponse:
+    if session_store.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="对话不存在")
+
+    message_task = active_message_tasks.get(session_id)
+    if message_task is not None and not message_task.done():
+        message_task.cancel()
+        return CancelSessionActivityResponse(cancelled=True, kind="message")
+
+    detail = session_store.get_detail(session_id)
+    running_run = next(
+        (run for run in reversed(detail.runs if detail else []) if run.status == "running"),
+        None,
+    )
+    if running_run is not None:
+        try:
+            await run_manager.stop(running_run.id)
+            record = run_manager.get(running_run.id)
+            if record is not None and record.task is not None:
+                await record.task
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="运行记录不存在") from error
+        return CancelSessionActivityResponse(cancelled=True, kind="run")
+
+    return CancelSessionActivityResponse(cancelled=False, kind="none")
 
 
 @app.get("/api/project/tree", response_model=WorkspaceTree)

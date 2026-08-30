@@ -9,7 +9,6 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
-  ArrowRight,
   CircleDot,
   FileCode2,
   GitCompareArrows,
@@ -18,7 +17,6 @@ import {
   Plus,
   RotateCcw,
   Sparkles,
-  Square,
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -44,6 +42,7 @@ import {
 } from "./features/workspace/workspaceState";
 import {
   acceptRun,
+  cancelSessionActivity,
   createSession,
   deleteSession,
   discardRun,
@@ -60,7 +59,6 @@ import {
   listSessions,
   resolveRunApproval,
   sendSessionMessage,
-  stopRun,
   subscribeToRun,
   type CanvasNoteLabel,
   type ChangeSummary,
@@ -79,7 +77,6 @@ import {
 
 type ConnectionState = "checking" | "connected" | "failed";
 
-const phases = ["表达想法", "整理意图", "修改代码", "运行验证", "审查修改"];
 const STORAGE_KEY = "intentflow.canvas.v1";
 const CONVERSATION_WIDTH_KEY = "intentflow.conversation-width.v1";
 const ACTIVE_SESSION_KEY = "intentflow.active-session.v1";
@@ -153,6 +150,7 @@ export function App() {
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("ask");
   const [attachCanvas, setAttachCanvas] = useState(false);
   const [messageSending, setMessageSending] = useState(false);
+  const [activityInterrupting, setActivityInterrupting] = useState(false);
   const [sessionDeleting, setSessionDeleting] = useState(false);
   const [messageError, setMessageError] = useState("");
   const closeRunStream = useRef<(() => void) | null>(null);
@@ -577,15 +575,26 @@ export function App() {
       }
     } finally {
       setMessageSending(false);
+      setActivityInterrupting(false);
     }
   }
 
-  async function handleStop() {
-    if (!run || run.status !== "running") return;
+  async function handleInterrupt() {
+    if (!activeSessionId || (!messageSending && run?.status !== "running")) return;
+    setActivityInterrupting(true);
+    setMessageError("");
     try {
-      await stopRun(run.id);
+      const result = await cancelSessionActivity(activeSessionId);
+      if (result.kind === "run" && run) {
+        await refreshRun(run.id);
+        setActivityInterrupting(false);
+      } else if (result.kind === "none") {
+        setMessageError("当前没有可中断的处理");
+        setActivityInterrupting(false);
+      }
     } catch (error) {
-      setRunError(error instanceof Error ? error.message : "停止 Agent 失败");
+      setMessageError(errorMessage(error, "中断当前处理失败"));
+      setActivityInterrupting(false);
     }
   }
 
@@ -799,7 +808,6 @@ export function App() {
     connected: "后端已连接",
     failed: "后端连接失败",
   }[connection];
-  const isRunning = run?.status === "running";
   const pendingReviewRun = [...sessionRuns]
     .reverse()
     .find((sessionRun) => sessionRun.review_status === "pending") ?? null;
@@ -808,9 +816,6 @@ export function App() {
     : pendingReviewRun
       ? "请先应用或放弃上一轮 Agent 修改"
       : "";
-  const activePhaseCount = run
-    ? run.status === "running" ? 4 : 5
-    : sessionMessages.length > 0 ? 2 : 1;
   const runStatusText = run
     ? { running: "运行中", completed: "已完成", failed: "失败", stopped: "已停止" }[run.status]
     : "待运行";
@@ -861,22 +866,8 @@ export function App() {
           <div className={`connection-state connection-state--${connection}`}>
             <span className="connection-dot" aria-hidden="true" />{statusText}
           </div>
-          {isRunning && (
-            <button className="stop-button" type="button" onClick={() => void handleStop()}>
-              <Square size={13} fill="currentColor" />停止
-            </button>
-          )}
         </div>
       </header>
-
-      <section className="phase-strip" aria-label="核心工作流">
-        {phases.map((phase, index) => (
-          <div className={`phase-item ${index < activePhaseCount ? "phase-item--active" : ""}`} key={phase}>
-            <span className="phase-number">0{index + 1}</span><span>{phase}</span>
-            {index < phases.length - 1 && <ArrowRight size={14} aria-hidden="true" />}
-          </div>
-        ))}
-      </section>
 
       <div
         className="workspace-grid"
@@ -1056,12 +1047,15 @@ export function App() {
               approvalMode={approvalMode}
               attachCanvas={attachCanvas}
               sending={messageSending}
+              activityRunning={run?.status === "running"}
+              interrupting={activityInterrupting}
               pendingReviewNotice={agentBlockReason}
               error={messageError}
               onChange={setMessageDraft}
               onApprovalModeChange={setApprovalMode}
               onAttachCanvasChange={setAttachCanvas}
               onSubmit={() => void handleSendMessage()}
+              onInterrupt={() => void handleInterrupt()}
             />
           </aside>
         </div>

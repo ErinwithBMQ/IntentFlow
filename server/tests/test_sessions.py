@@ -514,6 +514,19 @@ class ReviewQuestionCompiler:
         return IntentRequestDecision(action="answer", response="你刚刚放弃了修改。")
 
 
+class BlockingCompiler:
+    async def compile_agent_request(
+        self,
+        canvas: IntentCanvas,
+        primary_source_id: str,
+        *,
+        project_context: str = "",
+        session_context: str = "",
+    ) -> IntentRequestDecision:
+        await asyncio.Event().wait()
+        raise AssertionError("cancelled model request unexpectedly resumed")
+
+
 def test_project_context_contains_source_and_ignores_dependencies(tmp_path) -> None:
     project = tmp_path / "todo-demo"
     (project / "src").mkdir(parents=True)
@@ -552,7 +565,9 @@ async def test_plan_message_returns_structured_intent_without_a_run(tmp_path, mo
     assert response.status_code == 201
     assert payload["run"] is None
     assert payload["assistant_message"]["intent"]["title"] == "增加筛选"
-    assert payload["assistant_message"]["content"] == "我根据当前项目整理了《增加筛选》计划。"
+    assert payload["assistant_message"]["content"] == (
+        "收到，我先根据当前项目整理了一份《增加筛选》计划。"
+    )
 
 
 async def test_plan_question_returns_direct_answer_without_intent(tmp_path, monkeypatch) -> None:
@@ -616,6 +631,51 @@ async def test_unified_agent_receives_discarded_run_fact_for_a_follow_up(
     assert payload["run"] is None
     assert payload["user_message"]["mode"] == "agent"
     assert payload["assistant_message"]["content"] == "你刚刚放弃了修改。"
+
+
+async def test_message_processing_can_be_cancelled_from_the_session_endpoint(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = make_store(tmp_path / "intentflow.db")
+    session = store.create_session("todo-demo")
+    monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(
+        main_module,
+        "create_ai_intent_compiler",
+        lambda: BlockingCompiler(),
+    )
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        send_task = asyncio.create_task(
+            client.post(
+                f"/api/sessions/{session.id}/messages",
+                json={"content": "分析一下当前实现"},
+            )
+        )
+        for _ in range(100):
+            detail = store.get_detail(session.id)
+            if session.id in main_module.active_message_tasks and detail and detail.messages:
+                break
+            await asyncio.sleep(0.01)
+        detail_response = await client.get(f"/api/sessions/{session.id}")
+        delete_response = await client.delete(f"/api/sessions/{session.id}")
+        cancelled = await client.post(f"/api/sessions/{session.id}/cancel")
+        response = await send_task
+
+    restored = store.get_detail(session.id)
+    assert detail_response.status_code == 200
+    assert delete_response.status_code == 409
+    assert cancelled.status_code == 200
+    assert cancelled.json() == {"cancelled": True, "kind": "message"}
+    assert response.status_code == 201
+    assert response.json()["assistant_message"]["content"] == (
+        "已中断本次处理，没有启动新的 Agent 运行。"
+    )
+    assert restored is not None
+    assert len(restored.messages) == 2
+    assert restored.runs == []
 
 
 async def test_agent_message_requires_previous_run_review(tmp_path, monkeypatch) -> None:
@@ -738,6 +798,64 @@ def agent_model_factory(_registry):
     )
 
 
+def pending_patch_model_factory(_registry):
+    return FakeModelClient(
+        [
+            ModelTurn(
+                action="修改文件",
+                reason="验证统一中断入口",
+                related_requirement_ids=["REQ-01"],
+                tool_calls=[
+                    ToolCall(
+                        id="patch",
+                        name="apply_patch",
+                        arguments={
+                            "path": "source.txt",
+                            "old_text": "ready",
+                            "new_text": "changed",
+                        },
+                        related_requirement_ids=["REQ-01"],
+                    )
+                ],
+            )
+        ]
+    )
+
+
+async def test_session_cancel_endpoint_stops_a_running_agent(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "examples" / "todo-demo"
+    project.mkdir(parents=True)
+    (project / "source.txt").write_text("ready", encoding="utf-8")
+    store = make_store(tmp_path / "intentflow.db")
+    session = store.create_session("todo-demo")
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=pending_patch_model_factory,
+        command_factory=lambda _workspace: {},
+        snapshot_sink=store.save_run,
+    )
+    snapshot = manager.start(sample_brief(), session_id=session.id)
+    for _ in range(100):
+        record = manager.get(snapshot.id)
+        if record and record.approvals:
+            break
+        await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    transport = ASGITransport(app=main_module.app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(f"/api/sessions/{session.id}/cancel")
+
+    record = manager.get(snapshot.id)
+    assert response.status_code == 200
+    assert response.json() == {"cancelled": True, "kind": "run"}
+    assert record is not None
+    assert record.status == "stopped"
+    assert record.approvals[0].status == "cancelled"
+    assert (record.workspace / "source.txt").read_text(encoding="utf-8") == "ready"
+
+
 async def test_agent_message_links_and_persists_its_run(tmp_path, monkeypatch) -> None:
     project = tmp_path / "examples" / "todo-demo"
     project.mkdir(parents=True)
@@ -778,6 +896,7 @@ async def test_agent_message_links_and_persists_its_run(tmp_path, monkeypatch) -
     assert response.status_code == 201
     assert response.json()["user_message"]["mode"] == "agent"
     assert response.json()["run"]["approval_mode"] == "auto"
+    assert response.json()["assistant_message"]["content"].startswith("收到，我来处理")
     assert response.json()["user_message"]["run_id"] == run_id
     assert restored is not None
     assert [message.run_id for message in restored.messages] == [run_id, run_id]

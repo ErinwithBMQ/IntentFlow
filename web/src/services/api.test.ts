@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   acceptRun,
+  cancelSessionActivity,
   compileIntent,
   createRun,
   createSession,
@@ -348,5 +349,22 @@ describe("getHealth", () => {
     );
 
     await expect(getProjectFile("image.bin")).rejects.toThrow("二进制文件不能作为文本查看");
+  });
+
+  it("cancels the active session activity", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ cancelled: true, kind: "message" }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(cancelSessionActivity("session-1")).resolves.toEqual({
+      cancelled: true,
+      kind: "message",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/session-1/cancel",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });

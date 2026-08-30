@@ -1,4 +1,4 @@
-import { Paperclip, Send, ShieldCheck } from "lucide-react";
+import { Paperclip, Send, ShieldCheck, Square } from "lucide-react";
 import type { KeyboardEvent } from "react";
 
 import type { ApprovalMode } from "../../services/api";
@@ -8,17 +8,20 @@ type ConversationComposerProps = {
   approvalMode: ApprovalMode;
   attachCanvas: boolean;
   sending: boolean;
+  activityRunning: boolean;
+  interrupting: boolean;
   pendingReviewNotice: string;
   error: string;
   onChange: (value: string) => void;
   onApprovalModeChange: (mode: ApprovalMode) => void;
   onAttachCanvasChange: (attached: boolean) => void;
   onSubmit: () => void;
+  onInterrupt: () => void;
 };
 
 const approvalDescriptions: Record<ApprovalMode, string> = {
   ask: "修改前请求批准",
-  auto: "本轮自动允许受控修改",
+  auto: "自动允许受控修改，最终应用仍需确认",
 };
 
 export function ConversationComposer({
@@ -26,14 +29,25 @@ export function ConversationComposer({
   approvalMode,
   attachCanvas,
   sending,
+  activityRunning,
+  interrupting,
   pendingReviewNotice,
   error,
   onChange,
   onApprovalModeChange,
   onAttachCanvasChange,
   onSubmit,
+  onInterrupt,
 }: ConversationComposerProps) {
-  const submitDisabled = sending || !value.trim();
+  const canInterrupt = sending || activityRunning;
+  const submitDisabled = canInterrupt || !value.trim();
+  const hint = interrupting
+    ? "正在中断当前处理…"
+    : sending
+      ? "Agent 正在读取会话并判断下一步…"
+      : activityRunning
+        ? "Agent 正在执行，点击右侧方形按钮可中断"
+        : pendingReviewNotice || approvalDescriptions[approvalMode];
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -76,21 +90,18 @@ export function ConversationComposer({
           <Paperclip size={13} />Canvas
         </label>
         <button
-          className="conversation-send"
+          className={`conversation-send ${canInterrupt ? "conversation-send--interrupt" : ""}`}
           type="button"
-          disabled={submitDisabled}
-          title="发送"
-          onClick={onSubmit}
+          disabled={canInterrupt ? interrupting : submitDisabled}
+          title={canInterrupt ? "中断当前处理" : "发送"}
+          aria-label={canInterrupt ? "中断当前处理" : "发送"}
+          onClick={canInterrupt ? onInterrupt : onSubmit}
         >
-          <Send size={14} />
+          {canInterrupt ? <Square size={13} fill="currentColor" /> : <Send size={14} />}
         </button>
       </div>
       <div className="conversation-composer__hint">
-        <span>
-          {sending
-            ? "Agent 正在读取会话并判断下一步…"
-            : pendingReviewNotice || approvalDescriptions[approvalMode]}
-        </span>
+        <span>{hint}</span>
         <span>Enter 发送 · Shift+Enter 换行</span>
       </div>
       {error && <p className="conversation-composer__error">{error}</p>}

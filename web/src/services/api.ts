@@ -203,6 +203,11 @@ export type SendSessionMessageResponse = {
   run: RunSnapshot | null;
 };
 
+export type CancelSessionActivityResponse = {
+  cancelled: boolean;
+  kind: "message" | "run" | "none";
+};
+
 export type WorkspaceScope = "project" | "run";
 
 export type WorkspaceEntry = {
@@ -298,6 +303,12 @@ export function sendSessionMessage(
     attach_canvas: canvas !== null,
     canvas,
   });
+}
+
+export function cancelSessionActivity(
+  sessionId: string,
+): Promise<CancelSessionActivityResponse> {
+  return postJson<CancelSessionActivityResponse>(`/api/sessions/${sessionId}/cancel`);
 }
 
 export function getProjectTree(): Promise<WorkspaceTree> {

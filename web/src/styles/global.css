@@ -9,10 +9,10 @@
 body { margin: 0; min-width: 1140px; min-height: 100vh; background: #f5f3ee; }
 button, input, textarea, select { font: inherit; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid #3b6cff; outline-offset: 2px; }
-.workspace-shell { height: 100vh; min-height: 720px; display: grid; grid-template-rows: 56px 42px minmax(0, 1fr) 42px; background: #f5f3ee; }
-.topbar, .statusbar, .phase-strip { display: flex; align-items: center; border-bottom: 1px solid #d9d8d2; }
+.workspace-shell { height: 100vh; min-height: 720px; display: grid; grid-template-rows: 56px minmax(0, 1fr) 42px; background: #f5f3ee; }
+.topbar, .statusbar { display: flex; align-items: center; border-bottom: 1px solid #d9d8d2; }
 .topbar { justify-content: space-between; padding: 0 18px; background: #fbfaf7; }
-.brand-block, .topbar-actions, .connection-state, .run-button, .stop-button, .compile-button, .phase-item { display: flex; align-items: center; }
+.brand-block, .topbar-actions, .connection-state, .run-button, .compile-button { display: flex; align-items: center; }
 .brand-block { gap: 9px; }
 .brand-mark { width: 28px; height: 28px; display: grid; place-items: center; color: #fbfaf7; background: #1d211f; border-radius: 5px; }
 .brand-name { font-size: 17px; font-weight: 600; }
@@ -23,18 +23,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .connection-dot { width: 7px; height: 7px; border-radius: 50%; background: #c87816; }
 .connection-state--connected .connection-dot { background: #238a5a; }
 .connection-state--failed .connection-dot { background: #c4473a; }
-.run-button, .stop-button, .compile-button { gap: 7px; height: 34px; padding: 0 13px; border-radius: 4px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.run-button, .compile-button { gap: 7px; height: 34px; padding: 0 13px; border-radius: 4px; font-size: 14px; font-weight: 600; cursor: pointer; }
 .run-button { border: 0; color: #fbfaf7; background: #1d211f; }
-.stop-button { border: 1px solid #d4a29d; color: #a83b31; background: #fff4f2; }
 .compile-button { border: 1px solid #2e5be0; color: #fff; background: #3b6cff; }
 .run-button:disabled, .compile-button:disabled { cursor: not-allowed; opacity: 0.42; }
 .spin { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.phase-strip { justify-content: center; gap: 12px; background: #f5f3ee; color: #8b908c; font-size: 13px; }
-.phase-item { gap: 8px; }
-.phase-item--active { color: #1d211f; }
-.phase-number { color: #9a9e9b; font: 12px "Cascadia Code", monospace; }
-.phase-item--active .phase-number { color: #3b6cff; }
 .workspace-grid { display: grid; min-height: 0; }
 .tool-panel, .file-panel, .run-panel { min-height: 0; background: #fbfaf7; }
 .tool-panel { border-right: 1px solid #d9d8d2; }
@@ -160,6 +154,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .canvas-attachment-toggle { display: flex; align-items: center; gap: 4px; color: #626965; font-size: 10px; cursor: pointer; }
 .canvas-attachment-toggle input { margin: 0; }
 .conversation-send { width: 31px; height: 31px; margin-left: auto; display: grid; place-items: center; border: 0; border-radius: 5px; color: #fff; background: #1d211f; cursor: pointer; }
+.conversation-send--interrupt { color: #a83b31; background: #fff0ed; border: 1px solid #d7a19b; }
 .conversation-send:disabled { cursor: not-allowed; opacity: .38; }
 .conversation-composer__hint { margin-top: 6px; display: flex; justify-content: space-between; gap: 8px; color: #9a9e9b; font-size: 9px; }
 .conversation-composer__error { margin: 7px 0 0; color: #a83b31; font-size: 11px; line-height: 1.45; }
