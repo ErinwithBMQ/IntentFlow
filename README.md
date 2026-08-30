@@ -143,3 +143,4 @@ cd server
 
 当前模型适配层使用 OpenAI Responses API。`OPENAI_BASE_URL` 必须指向兼容 Responses
 协议的服务地址；Anthropic 协议地址不能直接使用，否则会返回 404。
+
