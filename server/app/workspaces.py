@@ -16,10 +16,16 @@ DEFAULT_IGNORED_NAMES = frozenset(
         ".pytest_cache",
         ".ruff_cache",
         ".vite",
+        ".next",
+        ".turbo",
+        ".venv",
         "__pycache__",
+        "build",
         "coverage",
         "dist",
         "node_modules",
+        "runtime-data",
+        "venv",
     }
 )
 DEFAULT_MAX_TEXT_BYTES = 512_000

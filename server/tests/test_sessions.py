@@ -22,6 +22,7 @@ from app.agent.models import (
 from app.conversation_service import build_project_context
 from app.intent.compiler import IntentRequestDecision
 from app.intent.models import CanvasNote, CanvasPosition, IntentCanvas
+from app.projects import ProjectRegistry
 from app.runs import RunManager, RunSnapshot
 from app.session_context import SessionContextBuilder
 from app.sessions import ProjectRecord, SessionStore
@@ -368,8 +369,12 @@ class StubResponder:
 
 
 async def test_session_api_creates_and_restores_ask_messages(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "examples" / "todo-demo"
+    project_root.mkdir(parents=True)
     store = make_store(tmp_path / "intentflow.db")
+    registry = ProjectRegistry(tmp_path / "intentflow.db", tmp_path)
     monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(main_module, "project_registry", registry)
     monkeypatch.setattr(main_module, "create_conversation_responder", lambda: StubResponder())
     transport = ASGITransport(app=main_module.app)
 
@@ -833,6 +838,7 @@ async def test_session_cancel_endpoint_stops_a_running_agent(tmp_path, monkeypat
         model_client_factory=pending_patch_model_factory,
         command_factory=lambda _workspace: {},
         snapshot_sink=store.save_run,
+        default_project_root=project,
     )
     snapshot = manager.start(sample_brief(), session_id=session.id)
     for _ in range(100):
@@ -860,7 +866,9 @@ async def test_agent_message_links_and_persists_its_run(tmp_path, monkeypatch) -
     project = tmp_path / "examples" / "todo-demo"
     project.mkdir(parents=True)
     (project / "source.txt").write_text("ready", encoding="utf-8")
-    store = make_store(tmp_path / "intentflow.db")
+    database = tmp_path / "intentflow.db"
+    store = make_store(database)
+    registry = ProjectRegistry(database, tmp_path)
     manager = RunManager(
         tmp_path,
         model_client_factory=agent_model_factory,
@@ -868,9 +876,11 @@ async def test_agent_message_links_and_persists_its_run(tmp_path, monkeypatch) -
             "test": (sys.executable, "-c", "print('ok')"),
         },
         snapshot_sink=store.save_run,
+        project_resolver=registry.get,
     )
     monkeypatch.setattr(main_module, "repository_root", tmp_path)
     monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(main_module, "project_registry", registry)
     monkeypatch.setattr(main_module, "run_manager", manager)
     monkeypatch.setattr(
         main_module,
@@ -896,6 +906,7 @@ async def test_agent_message_links_and_persists_its_run(tmp_path, monkeypatch) -
     assert response.status_code == 201
     assert response.json()["user_message"]["mode"] == "agent"
     assert response.json()["run"]["approval_mode"] == "auto"
+    assert response.json()["run"]["project_id"] == "todo-demo"
     assert response.json()["assistant_message"]["content"].startswith("收到，我来处理")
     assert response.json()["user_message"]["run_id"] == run_id
     assert restored is not None

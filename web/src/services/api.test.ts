@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   acceptRun,
+  activateProject,
   cancelSessionActivity,
   compileIntent,
+  createProject,
   createRun,
   createSession,
   deleteSession,
@@ -16,7 +18,9 @@ import {
   getRunFileDiff,
   getRunTree,
   getSession,
+  listProjects,
   listSessions,
+  registerProject,
   resolveRunApproval,
   sendSessionMessage,
   stopRun,
@@ -253,15 +257,18 @@ describe("getHealth", () => {
     ));
     vi.stubGlobal("fetch", fetchMock);
 
-    await listSessions();
-    await createSession();
+    await listSessions("project-1");
+    await createSession("project-1");
     await getSession(session.id);
     await sendSessionMessage(session.id, "增加筛选功能", "auto", null);
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "/api/sessions",
-      expect.objectContaining({ method: "POST", body: JSON.stringify({ title: "新对话" }) }),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ title: "新对话", project_id: "project-1" }),
+      }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       4,
@@ -320,16 +327,16 @@ describe("getHealth", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await getProjectTree();
-    await getProjectFile("src/tasks file.js");
+    await getProjectTree("project-1");
+    await getProjectFile("project-1", "src/tasks file.js");
     await getRunTree("run-1");
     await getRunFile("run-1", "src/tasks file.js");
     await getRunChanges("run-1");
     await getRunFileDiff("run-1", "src/tasks file.js");
 
     expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
-      "/api/project/tree",
-      "/api/project/file?path=src%2Ftasks+file.js",
+      "/api/project/tree?project_id=project-1",
+      "/api/project/file?project_id=project-1&path=src%2Ftasks+file.js",
       "/api/runs/run-1/tree",
       "/api/runs/run-1/file?path=src%2Ftasks+file.js",
       "/api/runs/run-1/changes",
@@ -348,7 +355,9 @@ describe("getHealth", () => {
       ),
     );
 
-    await expect(getProjectFile("image.bin")).rejects.toThrow("二进制文件不能作为文本查看");
+    await expect(getProjectFile("project-1", "image.bin")).rejects.toThrow(
+      "二进制文件不能作为文本查看",
+    );
   });
 
   it("cancels the active session activity", async () => {
@@ -365,6 +374,48 @@ describe("getHealth", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/sessions/session-1/cancel",
       expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("registers, lists, activates, and creates projects", async () => {
+    const project = { id: "project-1", name: "demo", root_path: "E:\\demo" };
+    const payloads = [project, [project], project, project];
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
+      new Response(JSON.stringify(payloads.shift()), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await registerProject("E:\\demo");
+    await listProjects();
+    await activateProject("project-1");
+    await createProject("E:\\projects", "new-app", "web");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/projects",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ path: "E:\\demo" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/projects/project-1/activate",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/api/projects/create",
+      expect.objectContaining({
+        body: JSON.stringify({
+          parent_path: "E:\\projects",
+          name: "new-app",
+          template: "web",
+        }),
+      }),
     );
   });
 });

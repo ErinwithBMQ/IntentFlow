@@ -368,8 +368,7 @@ class AgentRunner:
                         verification_evidence.clear()
                 tracker.record(call, execution, related_ids)
                 execution = self._attach_requirement_results(call, execution, tracker)
-                execution = self._require_real_completion_evidence(
-                    call,
+                execution = self._attach_real_completion_evidence(
                     execution,
                     verification_evidence,
                 )
@@ -461,27 +460,19 @@ class AgentRunner:
         return execution.model_copy(update={"report": report})
 
     @staticmethod
-    def _require_real_completion_evidence(
-        call: ToolCall,
+    def _attach_real_completion_evidence(
         execution: ToolExecution,
         verification_evidence: list[str],
     ) -> ToolExecution:
         report = execution.report
         if report is None or report.status != "completed":
             return execution
-        if verification_evidence:
-            return execution.model_copy(
-                update={"report": report.model_copy(update={"evidence": verification_evidence})}
-            )
-
-        return ToolExecution(
-            result=ToolResult(
-                call_id=call.id,
-                tool_name=call.name,
-                ok=False,
-                summary="Cannot complete before a test or build command succeeds",
-                output="Call run_command successfully, then report the result again.",
-            )
+        return execution.model_copy(
+            update={
+                "report": report.model_copy(
+                    update={"evidence": list(verification_evidence)}
+                )
+            }
         )
 
     async def _emit_tool_started(

@@ -1,14 +1,16 @@
 import shutil
 from pathlib import Path
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 import app.main as main_module
+from app.projects import ProjectRegistry
 from app.runs import RunManager, RunRecord
 from app.workspaces import WorkspaceService
 
 
-def prepare_repository(root: Path) -> tuple[RunManager, RunRecord]:
+def prepare_repository(root: Path) -> tuple[RunManager, RunRecord, ProjectRegistry]:
     project = root / "examples" / "todo-demo"
     project.mkdir(parents=True)
     (project / "source.js").write_bytes(b"const value = 'before';\n")
@@ -22,22 +24,28 @@ def prepare_repository(root: Path) -> tuple[RunManager, RunRecord]:
     (workspace / "added.txt").write_bytes(b"new\n")
     (workspace / "README.md").unlink()
 
-    manager = RunManager(root)
+    registry = ProjectRegistry(root / "runtime-data" / "intentflow.db", root)
+    registered = registry.register(project)
+    manager = RunManager(root, project_resolver=registry.get)
     record = RunRecord(
         "run-1",
         workspace,
         baseline,
         "runtime-data/runs/run-1/todo-demo",
+        project_id=registered.id,
+        project_name=registered.name,
+        project_root=project,
     )
     record.status = "completed"
     manager.records[record.id] = record
-    return manager, record
+    return manager, record, registry
 
 
 async def test_workspace_api_reads_project_run_and_diff(tmp_path, monkeypatch) -> None:
-    manager, _ = prepare_repository(tmp_path)
+    manager, _, registry = prepare_repository(tmp_path)
     monkeypatch.setattr(main_module, "repository_root", tmp_path)
     monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "project_registry", registry)
     transport = ASGITransport(app=main_module.app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -70,10 +78,71 @@ async def test_workspace_api_reads_project_run_and_diff(tmp_path, monkeypatch) -
     assert "+const value = 'after';" in file_diff.json()["diff"]
 
 
-async def test_workspace_api_rejects_invalid_state_and_paths(tmp_path, monkeypatch) -> None:
-    manager, record = prepare_repository(tmp_path)
+async def test_run_preview_prefers_built_dist_files(tmp_path, monkeypatch) -> None:
+    manager, record, registry = prepare_repository(tmp_path)
+    (record.workspace / "index.html").write_text("root preview", encoding="utf-8")
+    preview_root = record.workspace / "dist"
+    preview_root.mkdir()
+    (preview_root / "index.html").write_text(
+        '<script src="/assets/app.js"></script>',
+        encoding="utf-8",
+    )
+    assets = preview_root / "assets"
+    assets.mkdir()
+    (assets / "app.js").write_text("document.body.dataset.ready = 'yes';", encoding="utf-8")
     monkeypatch.setattr(main_module, "repository_root", tmp_path)
     monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "project_registry", registry)
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        preview = await client.get("/api/runs/run-1/preview")
+        index = await client.get("/api/runs/run-1/preview-files/")
+        asset = await client.get("/api/runs/run-1/preview-files/assets/app.js")
+        escaped = await client.get("/api/runs/run-1/preview-files/../source.js")
+
+    assert preview.json() == {
+        "available": True,
+        "url": "/api/runs/run-1/preview-files/",
+    }
+    assert '/api/runs/run-1/preview-files/assets/app.js' in index.text
+    assert asset.text == "document.body.dataset.ready = 'yes';"
+    assert escaped.status_code == 404
+
+
+async def test_run_preview_serves_static_root_project_safely(tmp_path, monkeypatch) -> None:
+    manager, record, registry = prepare_repository(tmp_path)
+    (record.workspace / "index.html").write_text(
+        '<link rel="stylesheet" href="style.css"><main>Pomodoro</main>',
+        encoding="utf-8",
+    )
+    (record.workspace / "style.css").write_text("main { color: red; }", encoding="utf-8")
+    (record.workspace / ".env").write_text("SECRET=value", encoding="utf-8")
+    monkeypatch.setattr(main_module, "repository_root", tmp_path)
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "project_registry", registry)
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        preview = await client.get("/api/runs/run-1/preview")
+        index = await client.get("/api/runs/run-1/preview-files/")
+        stylesheet = await client.get("/api/runs/run-1/preview-files/style.css")
+        secret = await client.get("/api/runs/run-1/preview-files/.env")
+
+    assert preview.json() == {
+        "available": True,
+        "url": "/api/runs/run-1/preview-files/",
+    }
+    assert "Pomodoro" in index.text
+    assert stylesheet.text == "main { color: red; }"
+    assert secret.status_code == 404
+
+
+async def test_workspace_api_rejects_invalid_state_and_paths(tmp_path, monkeypatch) -> None:
+    manager, record, registry = prepare_repository(tmp_path)
+    monkeypatch.setattr(main_module, "repository_root", tmp_path)
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "project_registry", registry)
     transport = ASGITransport(app=main_module.app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -91,9 +160,10 @@ async def test_workspace_api_rejects_invalid_state_and_paths(tmp_path, monkeypat
 
 
 async def test_accept_applies_all_changes_and_is_idempotent(tmp_path, monkeypatch) -> None:
-    manager, record = prepare_repository(tmp_path)
+    manager, record, registry = prepare_repository(tmp_path)
     monkeypatch.setattr(main_module, "repository_root", tmp_path)
     monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "project_registry", registry)
     transport = ASGITransport(app=main_module.app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -119,9 +189,10 @@ async def test_accept_rejects_project_conflicts_without_partial_write(
     tmp_path,
     monkeypatch,
 ) -> None:
-    manager, record = prepare_repository(tmp_path)
+    manager, record, registry = prepare_repository(tmp_path)
     monkeypatch.setattr(main_module, "repository_root", tmp_path)
     monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "project_registry", registry)
     project = tmp_path / "examples" / "todo-demo"
     (project / "source.js").write_text("changed outside the run\n", encoding="utf-8")
     transport = ASGITransport(app=main_module.app)
@@ -138,9 +209,10 @@ async def test_accept_rejects_project_conflicts_without_partial_write(
 
 
 async def test_discard_preserves_project_and_blocks_later_accept(tmp_path, monkeypatch) -> None:
-    manager, record = prepare_repository(tmp_path)
+    manager, record, registry = prepare_repository(tmp_path)
     monkeypatch.setattr(main_module, "repository_root", tmp_path)
     monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "project_registry", registry)
     transport = ASGITransport(app=main_module.app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -159,26 +231,32 @@ async def test_discard_preserves_project_and_blocks_later_accept(tmp_path, monke
     assert (project / "README.md").is_file()
 
 
-async def test_only_completed_runs_can_be_accepted(tmp_path, monkeypatch) -> None:
-    manager, record = prepare_repository(tmp_path)
+@pytest.mark.parametrize("terminal_status", ["failed", "stopped"])
+async def test_terminal_runs_can_be_accepted(
+    tmp_path,
+    monkeypatch,
+    terminal_status,
+) -> None:
+    manager, record, registry = prepare_repository(tmp_path)
     monkeypatch.setattr(main_module, "repository_root", tmp_path)
     monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "project_registry", registry)
     transport = ASGITransport(app=main_module.app)
 
-    record.status = "failed"
+    record.status = terminal_status
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        rejected = await client.post("/api/runs/run-1/accept")
-        discarded = await client.post("/api/runs/run-1/discard")
+        accepted = await client.post("/api/runs/run-1/accept")
 
-    assert rejected.status_code == 409
-    assert discarded.status_code == 200
-    assert discarded.json()["review_status"] == "discarded"
+    assert accepted.status_code == 200
+    assert accepted.json()["review_status"] == "accepted"
+    assert record.review_status == "accepted"
 
 
 async def test_running_run_cannot_be_reviewed(tmp_path, monkeypatch) -> None:
-    manager, record = prepare_repository(tmp_path)
+    manager, record, registry = prepare_repository(tmp_path)
     monkeypatch.setattr(main_module, "repository_root", tmp_path)
     monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "project_registry", registry)
     transport = ASGITransport(app=main_module.app)
 
     record.status = "running"
@@ -204,10 +282,11 @@ class FailingWorkspaceService(WorkspaceService):
 
 
 async def test_accept_rolls_back_when_a_write_fails(tmp_path, monkeypatch) -> None:
-    manager, record = prepare_repository(tmp_path)
+    manager, record, registry = prepare_repository(tmp_path)
     manager.workspace_service = FailingWorkspaceService()
     monkeypatch.setattr(main_module, "repository_root", tmp_path)
     monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "project_registry", registry)
     transport = ASGITransport(app=main_module.app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:

@@ -5,9 +5,23 @@ export type HealthResponse = {
 };
 
 export type ProjectResponse = {
+  id: string;
   name: string;
-  relativePath: string;
+  root_path: string;
+  relative_path: string;
+  test_command: string[] | null;
+  build_command: string[] | null;
+  ignored_names: string[];
+  created_at: string;
+  updated_at: string;
+  last_opened_at: string;
   ready: boolean;
+};
+
+export type ProjectTemplate = "empty" | "web";
+
+export type DirectorySelectionResponse = {
+  path: string | null;
 };
 
 export type CanvasNoteLabel = "idea" | "behavior" | "constraint" | "acceptance";
@@ -147,6 +161,9 @@ export type RunSnapshot = {
   status: RunStatus;
   review_status: ReviewStatus;
   workspace_relative_path: string;
+  project_id: string | null;
+  project_name: string | null;
+  project_ignored_names: string[];
   session_id: string | null;
   trigger_message_id: string | null;
   intent: IntentBrief | null;
@@ -252,6 +269,11 @@ export type FileDiff = FileChange & {
   diff: string;
 };
 
+export type RunPreviewResponse = {
+  available: boolean;
+  url: string | null;
+};
+
 async function requestJson<T>(path: string): Promise<T> {
   const response = await fetch(path);
 
@@ -267,16 +289,58 @@ export function getHealth(): Promise<HealthResponse> {
   return requestJson<HealthResponse>("/api/health");
 }
 
-export function getProject(): Promise<ProjectResponse> {
-  return requestJson<ProjectResponse>("/api/project");
+export function getProject(): Promise<ProjectResponse | null> {
+  return requestJson<ProjectResponse | null>("/api/project");
 }
 
-export function listSessions(): Promise<SessionRecord[]> {
-  return requestJson<SessionRecord[]>("/api/sessions");
+export function listProjects(): Promise<ProjectResponse[]> {
+  return requestJson<ProjectResponse[]>("/api/projects");
 }
 
-export function createSession(title = "新对话"): Promise<SessionRecord> {
-  return postJson<SessionRecord>("/api/sessions", { title });
+export function registerProject(path: string): Promise<ProjectResponse> {
+  return postJson<ProjectResponse>("/api/projects", { path });
+}
+
+export function pickProjectDirectory(): Promise<ProjectResponse | null> {
+  return postJson<ProjectResponse | null>("/api/projects/pick-directory");
+}
+
+export function pickParentDirectory(): Promise<DirectorySelectionResponse> {
+  return postJson<DirectorySelectionResponse>("/api/projects/pick-parent");
+}
+
+export function createProject(
+  parentPath: string,
+  name: string,
+  template: ProjectTemplate,
+): Promise<ProjectResponse> {
+  return postJson<ProjectResponse>("/api/projects/create", {
+    parent_path: parentPath,
+    name,
+    template,
+  });
+}
+
+export function activateProject(projectId: string): Promise<ProjectResponse> {
+  return postJson<ProjectResponse>(`/api/projects/${projectId}/activate`);
+}
+
+export function updateProject(
+  projectId: string,
+  project: Pick<
+    ProjectResponse,
+    "name" | "test_command" | "build_command" | "ignored_names"
+  >,
+): Promise<ProjectResponse> {
+  return patchJson<ProjectResponse>(`/api/projects/${projectId}`, project);
+}
+
+export function listSessions(projectId: string): Promise<SessionRecord[]> {
+  return requestJson<SessionRecord[]>(withQuery("/api/sessions", { project_id: projectId }));
+}
+
+export function createSession(projectId: string, title = "新对话"): Promise<SessionRecord> {
+  return postJson<SessionRecord>("/api/sessions", { title, project_id: projectId });
 }
 
 export function getSession(sessionId: string): Promise<SessionDetail> {
@@ -311,12 +375,15 @@ export function cancelSessionActivity(
   return postJson<CancelSessionActivityResponse>(`/api/sessions/${sessionId}/cancel`);
 }
 
-export function getProjectTree(): Promise<WorkspaceTree> {
-  return requestJson<WorkspaceTree>("/api/project/tree");
+export function getProjectTree(projectId: string): Promise<WorkspaceTree> {
+  return requestJson<WorkspaceTree>(withQuery("/api/project/tree", { project_id: projectId }));
 }
 
-export function getProjectFile(path: string): Promise<WorkspaceFile> {
-  return requestJson<WorkspaceFile>(withPath("/api/project/file", path));
+export function getProjectFile(projectId: string, path: string): Promise<WorkspaceFile> {
+  return requestJson<WorkspaceFile>(withQuery("/api/project/file", {
+    project_id: projectId,
+    path,
+  }));
 }
 
 export async function compileIntent(
@@ -350,6 +417,19 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function patchJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? `请求失败：${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
 export function createRun(intent: IntentBrief): Promise<RunSnapshot> {
   return postJson<RunSnapshot>("/api/runs", { intent });
 }
@@ -372,6 +452,10 @@ export function getRunChanges(runId: string): Promise<ChangeSummary> {
 
 export function getRunFileDiff(runId: string, path: string): Promise<FileDiff> {
   return requestJson<FileDiff>(withPath(`/api/runs/${runId}/diff`, path));
+}
+
+export function getRunPreview(runId: string): Promise<RunPreviewResponse> {
+  return requestJson<RunPreviewResponse>(`/api/runs/${runId}/preview`);
 }
 
 export function stopRun(runId: string): Promise<RunSnapshot> {
@@ -418,4 +502,8 @@ export function subscribeToRun(
 
 function withPath(endpoint: string, path: string): string {
   return `${endpoint}?${new URLSearchParams({ path }).toString()}`;
+}
+
+function withQuery(endpoint: string, parameters: Record<string, string>): string {
+  return `${endpoint}?${new URLSearchParams(parameters).toString()}`;
 }

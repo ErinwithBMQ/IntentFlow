@@ -11,17 +11,12 @@ from pydantic import BaseModel, Field
 
 from app.agent.models import IntentBrief
 from app.intent.models import IntentCanvas
+from app.projects import ProjectRecord
 from app.runs import RunSnapshot
 
 ConversationMode = Literal["ask", "plan", "agent"]
 ApprovalMode = Literal["ask", "auto"]
 MessageRole = Literal["user", "assistant"]
-
-
-class ProjectRecord(BaseModel):
-    id: str
-    name: str
-    relative_path: str
 
 
 class SessionRecord(BaseModel):

@@ -1,6 +1,8 @@
 from httpx import ASGITransport, AsyncClient
 
+import app.main as main_module
 from app.main import app
+from app.projects import ProjectRegistry
 
 
 async def request(path: str):
@@ -20,12 +22,21 @@ async def test_health_endpoint() -> None:
     }
 
 
-async def test_project_endpoint_finds_the_demo() -> None:
+async def test_project_endpoint_returns_the_active_registered_project(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "my-project"
+    root.mkdir()
+    registry = ProjectRegistry(tmp_path / "intentflow.db", tmp_path)
+    expected = registry.register(root)
+    monkeypatch.setattr(main_module, "project_registry", registry)
+
     response = await request("/api/project")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "name": "todo-demo",
-        "relativePath": "examples/todo-demo",
-        "ready": True,
-    }
+    payload = response.json()
+    assert payload["id"] == expected.id
+    assert payload["name"] == "my-project"
+    assert payload["root_path"] == str(root)
+    assert payload["ready"] is True

@@ -384,7 +384,7 @@ async def test_runner_continues_after_context_compaction(tmp_path) -> None:
     assert manager.metrics.model_turns == 5
 
 
-async def test_model_cannot_claim_completion_without_real_verification(tmp_path) -> None:
+async def test_unverified_completion_keeps_only_real_evidence(tmp_path) -> None:
     model = FakeModelClient(
         [
             ModelTurn(
@@ -397,7 +397,7 @@ async def test_model_cannot_claim_completion_without_real_verification(tmp_path)
                         arguments={
                             "status": "completed",
                             "summary": "Done",
-                            "evidence": ["tests passed"],
+                            "evidence": [],
                             "requirements": [
                                 {
                                     "requirement_id": "REQ-1",
@@ -420,10 +420,11 @@ async def test_model_cannot_claim_completion_without_real_verification(tmp_path)
 
     result = await runner.run(make_intent())
 
-    assert result.status == "failed"
+    assert result.status == "completed"
+    assert result.report.evidence == []
+    assert result.report.requirement_results[0].status == "unresolved"
     tool_event = next(event for event in result.events if event.kind == "tool_finished")
-    assert tool_event.status == "failed"
-    assert "test or build command" in tool_event.action
+    assert tool_event.status == "succeeded"
 
 
 async def test_edit_invalidates_earlier_verification(tmp_path) -> None:
@@ -492,8 +493,9 @@ async def test_edit_invalidates_earlier_verification(tmp_path) -> None:
 
     result = await runner.run(make_intent())
 
-    assert result.status == "failed"
-    assert result.report.summary.endswith("step limit")
+    assert result.status == "completed"
+    assert result.report.summary == "Done"
+    assert result.report.evidence == []
     requirement = result.report.requirement_results[0]
     assert requirement.status == "implemented"
     assert requirement.related_files == ["value.js"]

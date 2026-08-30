@@ -1,6 +1,6 @@
 import type { ChangeSummary, WorkspaceScope } from "../../services/api";
 
-export type WorkspaceTab = "canvas" | "code" | "diff";
+export type WorkspaceTab = "canvas" | "code" | "diff" | "preview";
 
 export function workspaceFileKey(scope: WorkspaceScope, path: string): string {
   return `${scope}:${path}`;

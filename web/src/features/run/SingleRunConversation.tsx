@@ -80,6 +80,7 @@ export function SingleRunConversation({
   const pendingApproval = run.approvals.find(
     (approval) => approval.status === "approval_required",
   ) ?? null;
+  const hasVerification = (run.report?.evidence.length ?? 0) > 0;
 
   return (
     <div className={`conversation-content ${showIntentContext ? "" : "conversation-content--embedded"}`}>
@@ -352,9 +353,11 @@ export function SingleRunConversation({
                     : "正在准备变更摘要"}
                 </strong>
                 <p>
-                  {run.status === "completed"
+                  {run.status === "completed" && hasVerification
                     ? "应用会将本次变更写回项目当前版本；放弃只记录决定，Agent 修改版本和 Diff 仍会保留。"
-                    : "本次运行没有完整完成，不能接受修改，但可以保留记录并放弃本次结果。"}
+                    : run.status === "completed"
+                      ? "实现已经结束，但没有自动化验证结果。请检查代码和 Diff，再决定应用或放弃。"
+                      : "本次运行未正常完成，修改可能不完整。你仍可检查代码和 Diff，并自行决定是否应用。"}
                 </p>
                 <div className="review-actions">
                   <button
@@ -366,17 +369,17 @@ export function SingleRunConversation({
                     {reviewAction === "discard" && <LoaderCircle className="spin" size={12} />}
                     放弃修改
                   </button>
-                  {run.status === "completed" && (
-                    <button
-                      className="review-button review-button--accept"
-                      type="button"
-                      disabled={reviewAction !== null || changes === null}
-                      onClick={onAccept}
-                    >
-                      {reviewAction === "accept" && <LoaderCircle className="spin" size={12} />}
-                      应用到项目
-                    </button>
-                  )}
+                  <button
+                    className="review-button review-button--accept"
+                    type="button"
+                    disabled={reviewAction !== null || changes === null}
+                    onClick={onAccept}
+                  >
+                    {reviewAction === "accept" && <LoaderCircle className="spin" size={12} />}
+                    {run.status === "completed" && hasVerification
+                      ? "应用到项目"
+                      : "仍然应用修改"}
+                  </button>
                 </div>
               </>
             ) : (

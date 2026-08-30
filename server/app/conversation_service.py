@@ -112,18 +112,22 @@ def build_conversation_history_text(
     return "\n".join(f"{item['role']}: {item['content']}" for item in view)
 
 
-def build_project_context(project_root: Path) -> str:
+def build_project_context(
+    project_root: Path,
+    ignored_names: frozenset[str] = DEFAULT_IGNORED_NAMES,
+) -> str:
     resolved_root = project_root.resolve()
     if not resolved_root.is_dir():
         return "The configured project directory is unavailable."
 
     relative_files: list[str] = []
+    ignored_casefold = {name.casefold() for name in ignored_names}
     for current_root, directories, filenames in os.walk(resolved_root):
         current_path = Path(current_root)
         directories[:] = sorted(
             directory
             for directory in directories
-            if directory not in DEFAULT_IGNORED_NAMES
+            if directory.casefold() not in ignored_casefold
             and not (current_path / directory).is_symlink()
         )
         for filename in sorted(filenames):

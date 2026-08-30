@@ -123,7 +123,7 @@ async def test_apply_patch_supports_create_multi_edit_and_delete(tmp_path) -> No
     assert not (tmp_path / "src" / "new.js").exists()
 
 
-async def test_completed_report_requires_evidence(tmp_path) -> None:
+async def test_completed_report_allows_missing_automated_evidence(tmp_path) -> None:
     registry = ToolRegistry()
     call = ToolCall(
         id="report-1",
@@ -144,9 +144,10 @@ async def test_completed_report_requires_evidence(tmp_path) -> None:
 
     execution = await registry.execute(call, ToolContext(tmp_path, {}))
 
-    assert execution.result.ok is False
-    assert execution.report is None
-    assert "requires at least one evidence" in execution.result.summary
+    assert execution.result.ok is True
+    assert execution.report is not None
+    assert execution.report.status == "completed"
+    assert execution.report.evidence == []
 
 
 async def test_failed_command_retains_key_failure_from_long_output(tmp_path) -> None:

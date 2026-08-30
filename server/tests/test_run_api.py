@@ -305,6 +305,7 @@ async def test_apply_patch_waits_for_approval_and_rejects_duplicate_response(
         tmp_path,
         model_client_factory=modifying_model_factory,
         command_factory=command_factory,
+        default_project_root=tmp_path / "examples" / "todo-demo",
     )
     monkeypatch.setattr(main_module, "run_manager", manager)
     transport = ASGITransport(app=main_module.app)
@@ -348,6 +349,7 @@ async def test_stop_cancels_pending_approval_without_applying_patch(tmp_path, mo
         tmp_path,
         model_client_factory=modifying_model_factory,
         command_factory=command_factory,
+        default_project_root=tmp_path / "examples" / "todo-demo",
     )
     monkeypatch.setattr(main_module, "run_manager", manager)
     transport = ASGITransport(app=main_module.app)
@@ -373,6 +375,7 @@ async def test_allow_for_run_automatically_approves_later_patches(tmp_path, monk
         tmp_path,
         model_client_factory=two_patch_model_factory,
         command_factory=command_factory,
+        default_project_root=tmp_path / "examples" / "todo-demo",
     )
     monkeypatch.setattr(main_module, "run_manager", manager)
     transport = ASGITransport(app=main_module.app)
@@ -403,6 +406,7 @@ async def test_run_can_start_with_automatic_approval_policy(tmp_path) -> None:
         tmp_path,
         model_client_factory=modifying_model_factory,
         command_factory=command_factory,
+        default_project_root=tmp_path / "examples" / "todo-demo",
     )
 
     snapshot = manager.start(
@@ -475,6 +479,7 @@ async def test_rejected_patch_is_returned_to_model_without_changing_file(
         tmp_path,
         model_client_factory=rejecting_model_factory,
         command_factory=command_factory,
+        default_project_root=tmp_path / "examples" / "todo-demo",
     )
     monkeypatch.setattr(main_module, "run_manager", manager)
     transport = ASGITransport(app=main_module.app)
@@ -504,6 +509,7 @@ async def test_pending_approval_times_out_without_applying_patch(tmp_path) -> No
         tmp_path,
         model_client_factory=modifying_model_factory,
         command_factory=command_factory,
+        default_project_root=tmp_path / "examples" / "todo-demo",
         approval_timeout_seconds=0.01,
     )
     snapshot = manager.start(IntentBrief.model_validate(run_payload()["intent"]))
@@ -523,6 +529,7 @@ async def test_run_api_copies_demo_and_streams_events(tmp_path, monkeypatch) -> 
         tmp_path,
         model_client_factory=fake_model_factory,
         command_factory=command_factory,
+        default_project_root=tmp_path / "examples" / "todo-demo",
     )
     monkeypatch.setattr(main_module, "run_manager", manager)
     payload = {
@@ -550,7 +557,7 @@ async def test_run_api_copies_demo_and_streams_events(tmp_path, monkeypatch) -> 
         assert record is not None
         assert record.baseline != record.workspace
         assert record.baseline.relative_to(tmp_path).as_posix() == (
-            f"runtime-data/runs/{run_id}/baseline/todo-demo"
+            f"runtime-data/runs/{run_id}/baseline/workspace"
         )
         assert (record.baseline / "source.txt").read_text(encoding="utf-8") == "original"
         assert (workspace / "source.txt").read_text(encoding="utf-8") == "original"
@@ -585,6 +592,7 @@ async def test_run_baseline_stays_frozen_when_the_project_changes(tmp_path) -> N
         tmp_path,
         model_client_factory=fake_model_factory,
         command_factory=command_factory,
+        default_project_root=tmp_path / "examples" / "todo-demo",
     )
     snapshot = manager.start(
         IntentBrief(
@@ -621,6 +629,7 @@ async def test_run_api_allows_a_ninth_turn_for_the_final_report(
         tmp_path,
         model_client_factory=ninth_turn_report_model_factory,
         command_factory=command_factory,
+        default_project_root=tmp_path / "examples" / "todo-demo",
     )
     monkeypatch.setattr(main_module, "run_manager", manager)
     payload = {

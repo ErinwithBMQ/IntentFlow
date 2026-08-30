@@ -21,10 +21,9 @@ npm install
 cd ..\server
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-
-cd ..\examples\todo-demo
-npm install
 ```
+
+仅在使用仓库内置 Todo 示例时，才需要进入 `examples\todo-demo` 执行 `npm install`。
 
 ## 启动 IntentFlow
 
@@ -33,6 +32,16 @@ npm install
 ```
 
 前端默认运行在 `http://localhost:5173`，后端默认运行在 `http://localhost:8000`。
+
+首次进入且没有已登记项目时，点击“打开文件夹选择器”会由本机后端打开系统目录窗口；也可以
+手动输入绝对路径。项目授权记录保存在 SQLite 中，后续会恢复最近项目。顶部项目选择器可以
+切换已登记项目；每个 Session 固定属于创建时的项目，消息或 Agent 仍在处理时不能切换。
+“项目设置”可调整显示名称、`test`/`build` 受控命令参数和忽略目录。命令参数每行填写一个，
+`{workspace}` 表示 Agent 隔离目录，配置不会经过 Shell 执行。
+
+项目管理也可以在指定父目录下创建空项目或无外部依赖的原生 Web 模板。主工作区会优先预览
+Agent 生成的 `dist/index.html`；纯静态项目也可直接预览根目录 `index.html`。没有网页入口的
+项目不会显示“预览”标签。
 
 在右侧输入框中直接描述问题、规划请求或修改要求。统一 Agent 会在内部选择直接回答、返回
 结构化计划或生成 IntentBrief 并启动隔离运行，不再要求用户预先切换 Ask、Plan、Agent。
@@ -45,8 +54,10 @@ Session 的后续 Run 中自动允许受控修改。两者都不能绕过工作�
 
 消息发送后，输入框右侧的发送按钮会变成中断按钮：理解需求或整理计划时会取消当前模型请求，
 Agent Run 已启动时会停止 Runner。中断只停止当前处理，不会删除既有对话和历史 Diff。
-每次 Agent 运行都会把 `examples/todo-demo` 复制到
-`runtime-data/runs/<运行ID>/todo-demo`，未经“应用到项目”不会修改项目当前版本。
+没有可用自动化测试的实现可以正常结束，但会明确标记为未验证。已结束的 Run 即使未验证、
+失败或中断，用户仍可检查代码和 Diff，并在风险提示后二次确认是否写回项目当前版本。
+每次 Agent 运行都会把当前 Session 所属项目复制到
+`runtime-data/runs/<运行ID>/workspace`，未经“应用到项目”不会修改项目当前版本。
 
 Agent 调用 `apply_patch` 前会展示目标文件、修改原因和真实 Patch，并暂停等待“允许一次”、
 “本轮自动允许”或“拒绝”。拒绝结果会返回 Agent 供其调整；等待期间可以停止运行。
@@ -103,6 +114,7 @@ cd ..\server
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m ruff check .
 
+# 可选：验证仓库内置 Todo 示例
 cd ..\examples\todo-demo
 npm test
 npm run build

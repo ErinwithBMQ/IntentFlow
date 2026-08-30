@@ -23,6 +23,7 @@ from app.agent.models import (
 )
 from app.agent.runner import DEFAULT_MAX_STEPS, AgentRunner
 from app.agent.tools import ToolContext, ToolRegistry
+from app.projects import ProjectRecord
 from app.workspaces import DEFAULT_IGNORED_NAMES, WorkspaceService
 
 ReviewStatus = Literal["pending", "accepted", "discarded"]
@@ -37,6 +38,9 @@ class RunSnapshot(BaseModel):
     status: Literal["running", "completed", "failed", "stopped"]
     review_status: ReviewStatus
     workspace_relative_path: str
+    project_id: str | None = None
+    project_name: str | None = None
+    project_ignored_names: list[str] = Field(default_factory=lambda: sorted(DEFAULT_IGNORED_NAMES))
     session_id: str | None = None
     trigger_message_id: str | None = None
     intent: IntentBrief | None = None
@@ -57,6 +61,10 @@ class RunRecord:
         baseline: Path,
         relative_path: str,
         *,
+        project_id: str | None = None,
+        project_name: str | None = None,
+        project_root: Path | None = None,
+        project_ignored_names: frozenset[str] = DEFAULT_IGNORED_NAMES,
         session_id: str | None = None,
         trigger_message_id: str | None = None,
         intent: IntentBrief | None = None,
@@ -70,6 +78,10 @@ class RunRecord:
         self.workspace = workspace
         self.baseline = baseline
         self.relative_path = relative_path
+        self.project_id = project_id
+        self.project_name = project_name or workspace.name
+        self.project_root = project_root.resolve() if project_root is not None else None
+        self.project_ignored_names = project_ignored_names
         self.session_id = session_id
         self.trigger_message_id = trigger_message_id
         self.intent = intent
@@ -204,6 +216,9 @@ class RunRecord:
             status=self.status,
             review_status=self.review_status,
             workspace_relative_path=self.relative_path,
+            project_id=self.project_id,
+            project_name=self.project_name,
+            project_ignored_names=sorted(self.project_ignored_names),
             session_id=self.session_id,
             trigger_message_id=self.trigger_message_id,
             intent=self.intent,
@@ -229,6 +244,8 @@ class RunManager:
         snapshot_sink: Callable[[RunSnapshot], None] | None = None,
         approval_timeout_seconds: float = 300.0,
         context_budget: ContextBudget | None = None,
+        project_resolver: Callable[[str], ProjectRecord | None] | None = None,
+        default_project_root: Path | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
@@ -237,10 +254,14 @@ class RunManager:
         self.model_client_factory = model_client_factory
         self.command_factory = command_factory
         self.max_steps = max_steps
-        self.workspace_service = workspace_service or WorkspaceService()
+        self.workspace_service = workspace_service
         self.snapshot_sink = snapshot_sink
         self.approval_timeout_seconds = approval_timeout_seconds
         self.context_budget = context_budget
+        self.project_resolver = project_resolver
+        self.default_project_root = (
+            default_project_root.resolve() if default_project_root is not None else None
+        )
 
     def start(
         self,
@@ -250,6 +271,7 @@ class RunManager:
         trigger_message_id: str | None = None,
         prior_context: str = "",
         approval_mode: Literal["ask", "auto"] = "ask",
+        project: ProjectRecord | None = None,
     ) -> RunSnapshot:
         if any(record.status == "running" for record in self.records.values()):
             raise RuntimeError("已有 Agent 任务正在运行，请等待完成或先停止它")
@@ -261,17 +283,18 @@ class RunManager:
             base_url = None
         context_budget = self.context_budget or self._context_budget()
         context_budget.validate_limits()
+        project_root, project_id, project_name, ignored_names = self._project_details(project)
         run_id = uuid4().hex[:12]
-        relative_path = f"runtime-data/runs/{run_id}/todo-demo"
+        relative_path = f"runtime-data/runs/{run_id}/workspace"
         workspace = self.repository_root / Path(relative_path)
         run_root = workspace.parent
-        baseline = run_root / "baseline" / "todo-demo"
+        baseline = run_root / "baseline" / "workspace"
         run_root.mkdir(parents=True, exist_ok=False)
         try:
             shutil.copytree(
-                self.repository_root / "examples" / "todo-demo",
+                project_root,
                 baseline,
-                ignore=shutil.ignore_patterns(*DEFAULT_IGNORED_NAMES),
+                ignore=self._copy_ignore(ignored_names),
             )
             shutil.copytree(baseline, workspace)
         except Exception:
@@ -283,6 +306,10 @@ class RunManager:
             workspace,
             baseline,
             relative_path,
+            project_id=project_id,
+            project_name=project_name,
+            project_root=project_root,
+            project_ignored_names=ignored_names,
             session_id=session_id,
             trigger_message_id=trigger_message_id,
             intent=intent,
@@ -304,14 +331,16 @@ class RunManager:
                 timeout_seconds=120.0,
             )
         )
+        configured_commands = self._project_commands(project, workspace, project_root)
         context = ToolContext(
             workspace,
             allowed_commands=(
                 self.command_factory(workspace)
                 if self.command_factory is not None
-                else self._node_commands(workspace)
+                else configured_commands
             ),
             stop_event=record.stop_event,
+            ignored_names=ignored_names,
         )
         runner = AgentRunner(
             model_client,
@@ -330,11 +359,21 @@ class RunManager:
     def restore(self, snapshot: RunSnapshot) -> RunSnapshot:
         workspace = self.repository_root / Path(snapshot.workspace_relative_path)
         baseline = workspace.parent / "baseline" / workspace.name
+        project = (
+            self.project_resolver(snapshot.project_id)
+            if snapshot.project_id and self.project_resolver is not None
+            else None
+        )
+        project_root = Path(project.root_path) if project is not None else self.default_project_root
         record = RunRecord(
             snapshot.id,
             workspace,
             baseline,
             snapshot.workspace_relative_path,
+            project_id=snapshot.project_id,
+            project_name=snapshot.project_name or (project.name if project else workspace.name),
+            project_root=project_root,
+            project_ignored_names=frozenset(snapshot.project_ignored_names),
             session_id=snapshot.session_id,
             trigger_message_id=snapshot.trigger_message_id,
             intent=snapshot.intent,
@@ -375,6 +414,9 @@ class RunManager:
     def get(self, run_id: str) -> RunRecord | None:
         return self.records.get(run_id)
 
+    def has_running(self) -> bool:
+        return any(record.status == "running" for record in self.records.values())
+
     async def stop(self, run_id: str) -> RunSnapshot:
         record = self.records.get(run_id)
         if record is None:
@@ -399,11 +441,19 @@ class RunManager:
             return record.snapshot()
         if record.review_status == "discarded":
             raise RunReviewError("本次运行已放弃，不能再接受")
-        if record.status != "completed":
-            raise RunReviewError("只有已完成的运行才能接受修改")
+        if record.status == "running":
+            raise RunReviewError("运行结束后才能接受修改")
 
-        project = self.repository_root / "examples" / "todo-demo"
-        self.workspace_service.apply_changes(record.baseline, record.workspace, project)
+        if record.project_root is None:
+            raise RunReviewError("运行记录缺少所属项目，无法接受修改")
+        project_workspace = self.workspace_service or WorkspaceService(
+            ignored_names=record.project_ignored_names
+        )
+        project_workspace.apply_changes(
+            record.baseline,
+            record.workspace,
+            record.project_root,
+        )
         record.review_status = "accepted"
         record.persist()
         return record.snapshot()
@@ -525,17 +575,52 @@ class RunManager:
         except (TypeError, ValueError) as error:
             raise ValueError(f"Agent context configuration is invalid: {error}") from error
 
-    def _node_commands(self, workspace: Path) -> dict[str, tuple[str, ...]]:
-        node = shutil.which("node")
-        demo_root = self.repository_root / "examples" / "todo-demo"
-        vitest_cli = demo_root / "node_modules" / "vitest" / "vitest.mjs"
-        vite_cli = demo_root / "node_modules" / "vite" / "bin" / "vite.js"
-        if node is None or not vitest_cli.is_file() or not vite_cli.is_file():
-            raise ValueError("Todo 示例依赖未初始化，请先在 examples/todo-demo 执行 npm install")
-        return {
-            "test": (node, str(vitest_cli), "run", "--root", str(workspace)),
-            "build": (node, str(vite_cli), "build", str(workspace)),
+    def _project_details(
+        self,
+        project: ProjectRecord | None,
+    ) -> tuple[Path, str | None, str, frozenset[str]]:
+        if project is not None:
+            root = Path(project.root_path).resolve(strict=True)
+            return root, project.id, project.name, frozenset(project.ignored_names)
+        if self.default_project_root is None:
+            raise ValueError("Agent 运行缺少已授权项目")
+        root = self.default_project_root.resolve(strict=True)
+        return root, None, root.name, DEFAULT_IGNORED_NAMES
+
+    @staticmethod
+    def _copy_ignore(ignored_names: frozenset[str]) -> Callable[[str, list[str]], list[str]]:
+        ignored_casefold = {name.casefold() for name in ignored_names}
+
+        def ignore(directory: str, names: list[str]) -> list[str]:
+            current = Path(directory)
+            return [
+                name
+                for name in names
+                if name.casefold() in ignored_casefold or (current / name).is_symlink()
+            ]
+
+        return ignore
+
+    @staticmethod
+    def _project_commands(
+        project: ProjectRecord | None,
+        workspace: Path,
+        project_root: Path,
+    ) -> dict[str, tuple[str, ...]]:
+        if project is None:
+            return {}
+        replacements = {
+            "{workspace}": str(workspace),
+            "{project}": str(project_root),
         }
+        commands: dict[str, tuple[str, ...]] = {}
+        for name, configured in (
+            ("test", project.test_command),
+            ("build", project.build_command),
+        ):
+            if configured:
+                commands[name] = tuple(replacements.get(part, part) for part in configured)
+        return commands
 
 
 def sse_error(message: str) -> str:

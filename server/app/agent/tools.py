@@ -17,10 +17,12 @@ class ToolContext:
         workspace_root: Path,
         allowed_commands: dict[str, tuple[str, ...]],
         stop_event: asyncio.Event | None = None,
+        ignored_names: frozenset[str] | None = None,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
         self.allowed_commands = allowed_commands
         self.stop_event = stop_event or asyncio.Event()
+        self.ignored_names = ignored_names or ListFilesTool.ignored_names
 
     def resolve_path(self, relative_path: str) -> Path:
         path = Path(relative_path)
@@ -116,7 +118,9 @@ class ListFilesTool(BaseTool):
             files: list[str] = []
             for current_root, directories, filenames in os.walk(target):
                 directories[:] = sorted(
-                    directory for directory in directories if directory not in self.ignored_names
+                    directory
+                    for directory in directories
+                    if directory not in context.ignored_names
                 )
                 for filename in sorted(filenames):
                     file_path = Path(current_root) / filename
@@ -212,7 +216,7 @@ class SearchCodeTool(BaseTool):
                     suggestion="List workspace files and choose an existing relative path.",
                     details={"path": arguments.path},
                 )
-            files = [target] if target.is_file() else self._files(target)
+            files = [target] if target.is_file() else self._files(target, context.ignored_names)
             matches: list[str] = []
             scanned_files = 0
             for file_path in files:
@@ -252,13 +256,13 @@ class SearchCodeTool(BaseTool):
             "\n".join(matches) or "No matches found",
         )
 
-    def _files(self, root: Path) -> list[Path]:
+    def _files(self, root: Path, ignored_names: frozenset[str]) -> list[Path]:
         files: list[Path] = []
         for current_root, directories, filenames in os.walk(root):
             directories[:] = sorted(
                 name
                 for name in directories
-                if name not in self.ignored_names and not (Path(current_root) / name).is_symlink()
+                if name not in ignored_names and not (Path(current_root) / name).is_symlink()
             )
             files.extend(Path(current_root) / name for name in sorted(filenames))
         return files
@@ -548,9 +552,6 @@ class ReportResultTool(BaseTool):
             arguments = self.arguments_model.model_validate(call.arguments)
         except ValidationError as error:
             return self.invalid_arguments(call, error)
-
-        if arguments.status == "completed" and not arguments.evidence:
-            return _failed_execution(call, "A completed report requires at least one evidence item")
 
         report = RunReport(
             status=arguments.status,

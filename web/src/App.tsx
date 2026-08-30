@@ -14,8 +14,10 @@ import {
   GitCompareArrows,
   Link2,
   MessageSquarePlus,
+  MonitorPlay,
   Plus,
   RotateCcw,
+  Settings2,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -29,6 +31,7 @@ import {
   type NoteNode as NoteNodeType,
 } from "./features/canvas/canvasState";
 import { NoteNode, NoteNodeProvider } from "./features/canvas/NoteNode";
+import { ProjectDialog } from "./features/projects/ProjectDialog";
 import { SingleRunConversation } from "./features/run/SingleRunConversation";
 import { ConversationComposer } from "./features/session/ConversationComposer";
 import { SessionConversation } from "./features/session/SessionConversation";
@@ -42,7 +45,9 @@ import {
 } from "./features/workspace/workspaceState";
 import {
   acceptRun,
+  activateProject,
   cancelSessionActivity,
+  createProject,
   createSession,
   deleteSession,
   discardRun,
@@ -54,12 +59,18 @@ import {
   getRunChanges,
   getRunFile,
   getRunFileDiff,
+  getRunPreview,
   getRunTree,
   getSession,
+  listProjects,
   listSessions,
+  pickParentDirectory,
+  pickProjectDirectory,
+  registerProject,
   resolveRunApproval,
   sendSessionMessage,
   subscribeToRun,
+  updateProject,
   type CanvasNoteLabel,
   type ChangeSummary,
   type ApprovalDecision,
@@ -69,6 +80,8 @@ import {
   type FileDiff,
   type IntentBrief,
   type ProjectResponse,
+  type ProjectTemplate,
+  type RunPreviewResponse,
   type RunSnapshot,
   type SessionRecord,
   type WorkspaceScope,
@@ -119,7 +132,12 @@ export function App() {
   const [supplementalText, setSupplementalText] = useState(initialCanvas.supplementalText);
   const [connectionLabel, setConnectionLabel] = useState("相关");
   const [connection, setConnection] = useState<ConnectionState>("checking");
+  const [projects, setProjects] = useState<ProjectResponse[]>([]);
   const [project, setProject] = useState<ProjectResponse | null>(null);
+  const [projectsReady, setProjectsReady] = useState(false);
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [projectBusy, setProjectBusy] = useState(false);
+  const [projectError, setProjectError] = useState("");
   const [run, setRun] = useState<RunSnapshot | null>(null);
   const [runBrief, setRunBrief] = useState<IntentBrief | null>(null);
   const [runError, setRunError] = useState("");
@@ -138,6 +156,7 @@ export function App() {
   const [changes, setChanges] = useState<ChangeSummary | null>(null);
   const [activeDiffPath, setActiveDiffPath] = useState<string | null>(null);
   const [activeDiff, setActiveDiff] = useState<FileDiff | null>(null);
+  const [runPreview, setRunPreview] = useState<RunPreviewResponse | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState("");
   const [conversationWidth, setConversationWidth] = useState(loadConversationWidth);
@@ -162,84 +181,19 @@ export function App() {
     let active = true;
     async function bootstrap() {
       try {
-        const [health, projectInfo, availableSessions] = await Promise.all([
+        const [health, projectInfo, availableProjects] = await Promise.all([
           getHealth(),
           getProject(),
-          listSessions(),
+          listProjects(),
         ]);
         if (active && health.status === "ok") {
           setConnection("connected");
-          setProject(projectInfo);
-          try {
-            setProjectTree(await getProjectTree());
-          } catch (error) {
-            setWorkspaceError(errorMessage(error, "无法读取项目文件"));
-          }
-
-          const storedSessionId = localStorage.getItem(ACTIVE_SESSION_KEY);
-          let selectedSession = availableSessions.find(
-            (session) => session.id === storedSessionId,
-          ) ?? availableSessions[0];
-          if (!selectedSession) {
-            selectedSession = await createSession();
-            availableSessions.unshift(selectedSession);
-          }
-          if (!active) return;
-          setSessions(availableSessions);
-          setActiveSessionId(selectedSession.id);
-          setApprovalMode(selectedSession.approval_mode);
-          localStorage.setItem(ACTIVE_SESSION_KEY, selectedSession.id);
-
-          const detail = await getSession(selectedSession.id);
-          if (!active) return;
-          setSessionMessages(detail.messages);
-          setSessionRuns(detail.runs);
-          const latestRun = detail.runs.at(-1) ?? null;
-          setRun(latestRun);
-          setRunBrief(latestRun?.intent ?? null);
-          if (latestRun) {
-            try {
-              setRunTree(await getRunTree(latestRun.id));
-              if (latestRun.status !== "running") {
-                setChanges(await getRunChanges(latestRun.id));
-              } else {
-                const refreshRestoredRun = async () => {
-                  try {
-                    const snapshot = await getRun(latestRun.id);
-                    if (!active) return;
-                    setRun(snapshot);
-                    setSessionRuns((currentRuns) => currentRuns.map(
-                      (item) => item.id === snapshot.id ? snapshot : item,
-                    ));
-                    setRunTree(await getRunTree(snapshot.id));
-                    if (snapshot.status !== "running") {
-                      setChanges(await getRunChanges(snapshot.id));
-                    }
-                  } catch (error) {
-                    if (active) {
-                      setRunError(errorMessage(error, "无法读取运行结果"));
-                    }
-                  }
-                };
-                closeRunStream.current = subscribeToRun(
-                  latestRun.id,
-                  (event) => {
-                    setRun((current) => current?.id === latestRun.id
-                      ? {
-                          ...current,
-                          events: current.events.some((item) => item.sequence === event.sequence)
-                            ? current.events
-                            : [...current.events, event],
-                        }
-                      : current);
-                  },
-                  () => void refreshRestoredRun(),
-                  () => void refreshRestoredRun(),
-                );
-              }
-            } catch (error) {
-              setWorkspaceError(errorMessage(error, "无法恢复运行工作区"));
-            }
+          setProjects(availableProjects);
+          if (projectInfo?.ready) {
+            await loadProjectIntoView(projectInfo);
+          } else {
+            setProject(projectInfo);
+            setProjectDialogOpen(true);
           }
         }
       } catch (error) {
@@ -247,12 +201,16 @@ export function App() {
           setConnection("failed");
           setWorkspaceError(errorMessage(error, "无法读取项目文件"));
         }
+      } finally {
+        if (active) setProjectsReady(true);
       }
     }
     void bootstrap();
     return () => {
       active = false;
     };
+    // Initial bootstrap intentionally runs once; project changes use handleProjectSwitch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -365,6 +323,7 @@ export function App() {
     setChanges(null);
     setActiveDiffPath(null);
     setActiveDiff(null);
+    setRunPreview(null);
     setDiffError("");
     setDiffLoading(false);
     setReviewAction(null);
@@ -372,6 +331,142 @@ export function App() {
     setOpenFiles((currentFiles) => currentFiles.filter((file) => file.scope === "project"));
     if (activeFileKey?.startsWith("run:")) {
       setActiveFileKey(openFiles.find((file) => file.scope === "project")?.key ?? null);
+    }
+  }
+
+  async function loadProjectIntoView(selectedProject: ProjectResponse) {
+    closeRunStream.current?.();
+    setProject(selectedProject);
+    setProjectTree(null);
+    setOpenFiles([]);
+    setActiveFileKey(null);
+    setSessionMessages([]);
+    setSessionRuns([]);
+    setRun(null);
+    setRunBrief(null);
+    clearRunReview();
+    setWorkspaceError("");
+    setMessageError("");
+
+    try {
+      const [tree, availableSessions] = await Promise.all([
+        getProjectTree(selectedProject.id),
+        listSessions(selectedProject.id),
+      ]);
+      setProjectTree(tree);
+      const sessionStorageKey = `${ACTIVE_SESSION_KEY}.${selectedProject.id}`;
+      const storedSessionId = localStorage.getItem(sessionStorageKey);
+      let selectedSession = availableSessions.find(
+        (session) => session.id === storedSessionId,
+      ) ?? availableSessions[0];
+      if (!selectedSession) {
+        selectedSession = await createSession(selectedProject.id);
+        availableSessions.unshift(selectedSession);
+      }
+      setSessions(availableSessions);
+      await loadSessionIntoView(selectedSession.id, selectedProject.id);
+    } catch (error) {
+      setWorkspaceError(errorMessage(error, "无法打开项目"));
+    }
+  }
+
+  async function adoptProject(selectedProject: ProjectResponse) {
+    setProjectBusy(true);
+    setProjectError("");
+    try {
+      setProjects(await listProjects());
+      await loadProjectIntoView(selectedProject);
+      setProjectDialogOpen(false);
+    } catch (error) {
+      setProjectError(errorMessage(error, "无法打开项目"));
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function handleProjectSwitch(projectId: string) {
+    if (!project || project.id === projectId || projectBusy) return;
+    setProjectBusy(true);
+    setProjectError("");
+    try {
+      const activated = await activateProject(projectId);
+      await loadProjectIntoView(activated);
+      setProjects(await listProjects());
+    } catch (error) {
+      setProjectError(errorMessage(error, "无法切换项目"));
+      setProjectDialogOpen(true);
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function handlePickProject() {
+    setProjectBusy(true);
+    setProjectError("");
+    try {
+      const selected = await pickProjectDirectory();
+      if (selected) await adoptProject(selected);
+    } catch (error) {
+      setProjectError(errorMessage(error, "无法打开文件夹选择器"));
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function handleRegisterProject(path: string) {
+    setProjectBusy(true);
+    setProjectError("");
+    try {
+      await adoptProject(await registerProject(path));
+    } catch (error) {
+      setProjectError(errorMessage(error, "无法添加项目"));
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function handlePickParent(): Promise<string | null> {
+    setProjectBusy(true);
+    setProjectError("");
+    try {
+      return (await pickParentDirectory()).path;
+    } catch (error) {
+      setProjectError(errorMessage(error, "无法打开文件夹选择器"));
+      return null;
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function handleCreateProject(
+    parentPath: string,
+    name: string,
+    template: ProjectTemplate,
+  ) {
+    setProjectBusy(true);
+    setProjectError("");
+    try {
+      await adoptProject(await createProject(parentPath, name, template));
+    } catch (error) {
+      setProjectError(errorMessage(error, "无法创建项目"));
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function handleSaveProject(updatedProject: ProjectResponse) {
+    setProjectBusy(true);
+    setProjectError("");
+    try {
+      const saved = await updateProject(updatedProject.id, updatedProject);
+      setProject(saved);
+      setProjects((current) => current.map((item) => item.id === saved.id ? saved : item));
+      setProjectDialogOpen(false);
+      setProjectTree(await getProjectTree(saved.id));
+    } catch (error) {
+      setProjectError(errorMessage(error, "无法保存项目设置"));
+    } finally {
+      setProjectBusy(false);
     }
   }
 
@@ -412,6 +507,20 @@ export function App() {
     } catch (error) {
       setDiffError(errorMessage(error, "无法读取变更摘要"));
     }
+    try {
+      const preview = await getRunPreview(snapshot.id);
+      setRunPreview(preview);
+      if (!preview.available && workspaceTabRef.current === "preview") {
+        workspaceTabRef.current = "code";
+        setWorkspaceTab("code");
+      }
+    } catch {
+      setRunPreview(null);
+      if (workspaceTabRef.current === "preview") {
+        workspaceTabRef.current = "code";
+        setWorkspaceTab("code");
+      }
+    }
   }
 
   function watchRun(snapshot: RunSnapshot) {
@@ -447,14 +556,14 @@ export function App() {
     if (snapshot.status === "running") watchRun(snapshot);
   }
 
-  async function loadSessionIntoView(sessionId: string) {
+  async function loadSessionIntoView(sessionId: string, projectId = project?.id) {
     setMessageError("");
     closeRunStream.current?.();
     clearRunReview();
     setRun(null);
     setRunBrief(null);
     setActiveSessionId(sessionId);
-    localStorage.setItem(ACTIVE_SESSION_KEY, sessionId);
+    if (projectId) localStorage.setItem(`${ACTIVE_SESSION_KEY}.${projectId}`, sessionId);
     try {
       const detail = await getSession(sessionId);
       setApprovalMode(detail.session.approval_mode);
@@ -468,21 +577,22 @@ export function App() {
   }
 
   async function handleCreateSession() {
+    if (!project) return;
     setMessageError("");
     try {
-      const created = await createSession();
+      const created = await createSession(project.id);
       setSessions((current) => [created, ...current]);
       setSessionMessages([]);
       setSessionRuns([]);
       setMessageDraft("");
-      await loadSessionIntoView(created.id);
+      await loadSessionIntoView(created.id, project.id);
     } catch (error) {
       setMessageError(errorMessage(error, "无法新建对话"));
     }
   }
 
   async function handleDeleteSession() {
-    if (!activeSessionId || sessionDeleting) return;
+    if (!project || !activeSessionId || sessionDeleting) return;
     if (sessionRuns.some((sessionRun) => sessionRun.status === "running")) {
       setMessageError("运行中的对话不能删除，请先停止 Agent");
       return;
@@ -501,16 +611,16 @@ export function App() {
     try {
       closeRunStream.current?.();
       await deleteSession(activeSessionId);
-      let remainingSessions = await listSessions();
+      let remainingSessions = await listSessions(project.id);
       if (remainingSessions.length === 0) {
-        remainingSessions = [await createSession()];
+        remainingSessions = [await createSession(project.id)];
       }
       setSessions(remainingSessions);
       setSessionMessages([]);
       setSessionRuns([]);
       setRun(null);
       setRunBrief(null);
-      await loadSessionIntoView(remainingSessions[0].id);
+      await loadSessionIntoView(remainingSessions[0].id, project.id);
     } catch (error) {
       setMessageError(errorMessage(error, "删除对话失败"));
     } finally {
@@ -550,7 +660,7 @@ export function App() {
         response.user_message,
         response.assistant_message,
       ]);
-      setSessions(await listSessions());
+      if (project) setSessions(await listSessions(project.id));
 
       const createdRun = response.run;
       if (createdRun) {
@@ -616,11 +726,17 @@ export function App() {
   }
 
   async function handleAccept() {
-    if (!run || run.status !== "completed" || run.review_status !== "pending" || !changes) {
+    if (!run || run.status === "running" || run.review_status !== "pending" || !changes) {
       return;
     }
+    const hasVerification = (run.report?.evidence.length ?? 0) > 0;
+    const riskNotice = run.status !== "completed"
+      ? "当前 Agent 运行未正常完成，修改可能不完整。请先检查 Diff。\n\n"
+      : !hasVerification
+        ? "本次修改没有自动化验证结果，请先检查 Diff。\n\n"
+        : "";
     const confirmed = window.confirm(
-      `接受本次运行的 ${changes.changed_files} 个文件变更并写入项目当前版本吗？`,
+      `${riskNotice}仍要将 ${changes.changed_files} 个文件变更写入项目当前版本吗？`,
     );
     if (!confirmed) return;
 
@@ -632,7 +748,7 @@ export function App() {
       setSessionRuns((currentRuns) => currentRuns.map(
         (item) => item.id === updated.id ? updated : item,
       ));
-      setProjectTree(await getProjectTree());
+      if (project) setProjectTree(await getProjectTree(project.id));
       await refreshOpenProjectFiles();
     } catch (error) {
       setReviewError(errorMessage(error, "接受修改失败"));
@@ -664,10 +780,11 @@ export function App() {
   }
 
   async function refreshOpenProjectFiles() {
+    if (!project) return;
     const projectFiles = openFiles.filter((file) => file.scope === "project");
     const refreshedFiles = await Promise.all(projectFiles.map(async (openFile) => {
       try {
-        const file = await getProjectFile(openFile.path);
+        const file = await getProjectFile(project.id, openFile.path);
         return { ...openFile, state: "ready" as const, file, error: "" };
       } catch (error) {
         return {
@@ -714,7 +831,9 @@ export function App() {
 
     try {
       const file = scope === "project"
-        ? await getProjectFile(path)
+        ? project
+          ? await getProjectFile(project.id, path)
+          : null
         : run
           ? await getRunFile(run.id, path)
           : null;
@@ -860,7 +979,35 @@ export function App() {
           <div className="brand-mark" aria-hidden="true"><Sparkles size={17} /></div>
           <span className="brand-name">IntentFlow</span>
           <span className="project-separator">/</span>
-          <span className="project-name">{project?.name ?? "todo-demo"}</span>
+          {project ? (
+            <select
+              className="project-switcher"
+              aria-label="当前项目"
+              value={project.id}
+              disabled={projectBusy || messageSending || run?.status === "running"}
+              title={project.root_path}
+              onChange={(event) => void handleProjectSwitch(event.target.value)}
+            >
+              {projects.map((item) => (
+                <option value={item.id} key={item.id}>{item.name}</option>
+              ))}
+            </select>
+          ) : (
+            <span className="project-name">未选择项目</span>
+          )}
+          <button
+            className="project-manage-button"
+            type="button"
+            aria-label="项目管理"
+            title="添加项目或修改项目设置"
+            disabled={projectBusy || messageSending || run?.status === "running"}
+            onClick={() => {
+              setProjectError("");
+              setProjectDialogOpen(true);
+            }}
+          >
+            <Settings2 size={14} />
+          </button>
         </div>
         <div className="topbar-actions">
           <div className={`connection-state connection-state--${connection}`}>
@@ -910,6 +1057,17 @@ export function App() {
               <GitCompareArrows size={13} />Diff
               {changes && <span>{changes.changed_files}</span>}
             </button>
+            {runPreview?.available && (
+              <button
+                className={workspaceTab === "preview" ? "workspace-tab--active" : ""}
+                type="button"
+                role="tab"
+                title="查看网页结果"
+                onClick={() => selectWorkspaceTab("preview")}
+              >
+                <MonitorPlay size={13} />预览
+              </button>
+            )}
           </div>
           <div className="workspace-view">
             {workspaceTab === "canvas" ? (
@@ -961,7 +1119,7 @@ export function App() {
                 onSelectFile={setActiveFileKey}
                 onCloseFile={closeWorkspaceFile}
               />
-            ) : (
+            ) : workspaceTab === "diff" ? (
               <DiffWorkspace
                 changes={changes}
                 activePath={activeDiffPath}
@@ -972,6 +1130,23 @@ export function App() {
                   if (run) void openRunDiff(run.id, change);
                 }}
               />
+            ) : (
+              <div className="preview-workspace">
+                {runPreview?.available && runPreview.url ? (
+                  <iframe
+                    key={runPreview.url}
+                    src={runPreview.url}
+                    title={`${project?.name ?? "项目"}构建预览`}
+                    sandbox="allow-scripts"
+                  />
+                ) : (
+                  <div className="workspace-empty">
+                    <MonitorPlay size={28} />
+                    <strong>暂无可预览的构建结果</strong>
+                    <p>Agent 成功生成 dist/index.html 后会在这里提供隔离预览。</p>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </section>
@@ -1009,6 +1184,9 @@ export function App() {
                   <option value={session.id} key={session.id}>{session.title}</option>
                 ))}
               </select>
+              <span className="session-project" title={project?.root_path}>
+                {project?.name ?? "未选择项目"}
+              </span>
               <button
                 type="button"
                 title="新建对话"
@@ -1082,8 +1260,24 @@ export function App() {
         </span>
         <span className="statusbar-divider" />
         <span>审查：{reviewStatusText}</span>
-        <span className="statusbar-spacer" /><span>v0.7.0 · unified Agent context</span>
+        <span className="statusbar-spacer" /><span>v0.8.0 · multi-project workspaces</span>
       </footer>
+
+      <ProjectDialog
+        open={projectsReady && (projectDialogOpen || !project?.ready)}
+        required={!project?.ready}
+        project={project}
+        busy={projectBusy}
+        error={projectError}
+        onClose={() => setProjectDialogOpen(false)}
+        onPickExisting={() => void handlePickProject()}
+        onPickParent={handlePickParent}
+        onRegisterPath={(path) => void handleRegisterProject(path)}
+        onCreate={(parentPath, name, template) => {
+          void handleCreateProject(parentPath, name, template);
+        }}
+        onSave={(updatedProject) => void handleSaveProject(updatedProject)}
+      />
     </main>
   );
 }

@@ -1,10 +1,11 @@
 import asyncio
+import mimetypes
 from pathlib import Path
 from typing import Literal
 
 from dotenv import dotenv_values
 from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.agent.models import IntentBrief
@@ -23,12 +24,18 @@ from app.intent import (
     validate_canvas_input,
 )
 from app.intent.models import CanvasNote, CanvasPosition, IntentCanvas
+from app.projects import (
+    ProjectRecord,
+    ProjectRegistrationError,
+    ProjectRegistry,
+    ProjectTemplate,
+    choose_directory,
+)
 from app.runs import RunManager, RunRecord, RunReviewError, RunSnapshot
 from app.session_context import ApprovalMode, SessionContextBuilder
 from app.sessions import (
     ConversationMessage,
     ConversationMode,
-    ProjectRecord,
     SessionDetail,
     SessionRecord,
     SessionStore,
@@ -51,9 +58,7 @@ class HealthResponse(BaseModel):
     version: str = "0.1.0"
 
 
-class ProjectResponse(BaseModel):
-    name: str
-    relativePath: str
+class ProjectResponse(ProjectRecord):
     ready: bool
 
 
@@ -63,26 +68,69 @@ app = FastAPI(
     description="Local API for the IntentFlow coding agent.",
 )
 repository_root = Path(__file__).resolve().parents[2]
-project_record = ProjectRecord(
-    id="todo-demo",
-    name="todo-demo",
-    relative_path="examples/todo-demo",
+PREVIEW_FILE_SUFFIXES = frozenset(
+    {
+        ".css",
+        ".gif",
+        ".htm",
+        ".html",
+        ".ico",
+        ".jpeg",
+        ".jpg",
+        ".js",
+        ".mjs",
+        ".otf",
+        ".png",
+        ".svg",
+        ".ttf",
+        ".wasm",
+        ".webp",
+        ".woff",
+        ".woff2",
+    }
 )
-session_store = SessionStore(repository_root / "runtime-data" / "intentflow.db")
-session_store.ensure_project(project_record)
-run_manager = RunManager(repository_root, snapshot_sink=session_store.save_run)
+database_path = repository_root / "runtime-data" / "intentflow.db"
+session_store = SessionStore(database_path)
+project_registry = ProjectRegistry(database_path, repository_root)
+run_manager = RunManager(
+    repository_root,
+    snapshot_sink=session_store.save_run,
+    project_resolver=project_registry.get,
+)
 for stored_run in session_store.load_runs():
+    if stored_run.project_id is None and stored_run.session_id:
+        stored_session = session_store.get_session(stored_run.session_id)
+        if stored_session is not None:
+            stored_run.project_id = stored_session.project_id
     run_manager.restore(stored_run)
-workspace_service = WorkspaceService()
 
 
 class CreateRunRequest(BaseModel):
     intent: IntentBrief
     approval_mode: ApprovalMode = "ask"
+    project_id: str | None = None
 
 
 class CreateSessionRequest(BaseModel):
     title: str = "新对话"
+    project_id: str | None = None
+
+
+class RegisterProjectRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4_096)
+
+
+class CreateProjectRequest(BaseModel):
+    parent_path: str = Field(min_length=1, max_length=4_096)
+    name: str = Field(min_length=1, max_length=120)
+    template: ProjectTemplate = "empty"
+
+
+class UpdateProjectRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    test_command: list[str] | None = None
+    build_command: list[str] | None = None
+    ignored_names: list[str] = Field(default_factory=list)
 
 
 class SendSessionMessageRequest(BaseModel):
@@ -104,6 +152,15 @@ class CancelSessionActivityResponse(BaseModel):
     kind: Literal["message", "run", "none"]
 
 
+class RunPreviewResponse(BaseModel):
+    available: bool
+    url: str | None = None
+
+
+class DirectorySelectionResponse(BaseModel):
+    path: str | None = None
+
+
 class ResolveApprovalRequest(BaseModel):
     decision: Literal["allow_once", "allow_for_run", "reject"]
 
@@ -116,24 +173,98 @@ async def get_health() -> HealthResponse:
     return HealthResponse()
 
 
-@app.get("/api/project", response_model=ProjectResponse)
-async def get_project() -> ProjectResponse:
-    project_path = repository_root / "examples" / "todo-demo"
-    return ProjectResponse(
-        name="todo-demo",
-        relativePath="examples/todo-demo",
-        ready=project_path.is_dir(),
-    )
+@app.get("/api/projects", response_model=list[ProjectResponse])
+async def list_projects() -> list[ProjectResponse]:
+    return [project_response(project) for project in project_registry.list()]
+
+
+@app.get("/api/project", response_model=ProjectResponse | None)
+async def get_project() -> ProjectResponse | None:
+    project = project_registry.get_active()
+    return project_response(project) if project is not None else None
+
+
+@app.post("/api/projects", response_model=ProjectResponse, status_code=201)
+async def register_project(request: RegisterProjectRequest) -> ProjectResponse:
+    ensure_project_change_available()
+    try:
+        return project_response(project_registry.register(request.path))
+    except ProjectRegistrationError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/api/projects/pick-directory", response_model=ProjectResponse | None)
+async def pick_project_directory() -> ProjectResponse | None:
+    ensure_project_change_available()
+    try:
+        selected = await asyncio.to_thread(choose_directory)
+        return project_response(project_registry.register(selected)) if selected else None
+    except ProjectRegistrationError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/projects/pick-parent", response_model=DirectorySelectionResponse)
+async def pick_parent_directory() -> DirectorySelectionResponse:
+    try:
+        return DirectorySelectionResponse(path=await asyncio.to_thread(choose_directory))
+    except ProjectRegistrationError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/projects/create", response_model=ProjectResponse, status_code=201)
+async def create_project(request: CreateProjectRequest) -> ProjectResponse:
+    ensure_project_change_available()
+    try:
+        project = project_registry.create(request.parent_path, request.name, request.template)
+        return project_response(project)
+    except (OSError, ProjectRegistrationError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/api/projects/{project_id}/activate", response_model=ProjectResponse)
+async def activate_project(project_id: str) -> ProjectResponse:
+    current = project_registry.get_active()
+    if (
+        (current is None or current.id != project_id)
+        and has_active_work()
+    ):
+        raise HTTPException(status_code=409, detail="当前任务仍在处理中，结束后才能切换项目")
+    try:
+        return project_response(project_registry.activate(project_id))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="项目不存在") from error
+
+
+@app.patch("/api/projects/{project_id}", response_model=ProjectResponse)
+async def update_project(
+    project_id: str,
+    request: UpdateProjectRequest,
+) -> ProjectResponse:
+    try:
+        project = project_registry.update(
+            project_id,
+            name=request.name,
+            test_command=request.test_command,
+            build_command=request.build_command,
+            ignored_names=request.ignored_names,
+        )
+        return project_response(project)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="项目不存在") from error
+    except ProjectRegistrationError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @app.get("/api/sessions", response_model=list[SessionRecord])
-async def list_sessions() -> list[SessionRecord]:
-    return session_store.list_sessions(project_record.id)
+async def list_sessions(project_id: str | None = None) -> list[SessionRecord]:
+    project = require_project(project_id)
+    return session_store.list_sessions(project.id)
 
 
 @app.post("/api/sessions", response_model=SessionRecord, status_code=201)
 async def create_session(request: CreateSessionRequest) -> SessionRecord:
-    return session_store.create_session(project_record.id, request.title)
+    project = require_project(request.project_id)
+    return session_store.create_session(project.id, request.title)
 
 
 @app.get("/api/sessions/{session_id}", response_model=SessionDetail)
@@ -171,6 +302,7 @@ async def _process_session_message(
     session = session_store.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="对话不存在")
+    project = require_project(session.project_id)
     content = request.content.strip()
     if not content:
         raise HTTPException(status_code=422, detail="消息内容不能为空")
@@ -201,7 +333,8 @@ async def _process_session_message(
         permission_policy=approval_mode,
     ).to_prompt_text()
     project_context = build_project_context(
-        repository_root / Path(project_record.relative_path)
+        Path(project.root_path),
+        frozenset(project.ignored_names),
     )
 
     if request.mode == "ask":
@@ -312,6 +445,7 @@ async def _process_session_message(
             trigger_message_id=user_message.id,
             prior_context=session_context,
             approval_mode=approval_mode,
+            project=project,
         )
     except RuntimeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -412,17 +546,19 @@ async def cancel_session_activity(session_id: str) -> CancelSessionActivityRespo
 
 
 @app.get("/api/project/tree", response_model=WorkspaceTree)
-async def get_project_tree() -> WorkspaceTree:
+async def get_project_tree(project_id: str | None = None) -> WorkspaceTree:
+    project = require_project(project_id)
     try:
-        return workspace_service.tree(project_root(), "todo-demo")
+        return project_workspace_service(project).tree(Path(project.root_path), project.name)
     except WorkspaceAccessError as error:
         raise workspace_http_error(error) from error
 
 
 @app.get("/api/project/file", response_model=WorkspaceFile)
-async def get_project_file(path: str) -> WorkspaceFile:
+async def get_project_file(path: str, project_id: str | None = None) -> WorkspaceFile:
+    project = require_project(project_id)
     try:
-        return workspace_service.read_text(project_root(), path)
+        return project_workspace_service(project).read_text(Path(project.root_path), path)
     except WorkspaceAccessError as error:
         raise workspace_http_error(error) from error
 
@@ -514,8 +650,17 @@ def conversation_canvas(
 
 @app.post("/api/runs", response_model=RunSnapshot, status_code=201)
 async def create_run(request: CreateRunRequest) -> RunSnapshot:
+    project = (
+        None
+        if request.project_id is None and run_manager.default_project_root is not None
+        else require_project(request.project_id)
+    )
     try:
-        return run_manager.start(request.intent, approval_mode=request.approval_mode)
+        return run_manager.start(
+            request.intent,
+            approval_mode=request.approval_mode,
+            project=project,
+        )
     except RuntimeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except (OSError, ValueError) as error:
@@ -534,7 +679,7 @@ async def get_run(run_id: str) -> RunSnapshot:
 async def get_run_tree(run_id: str) -> WorkspaceTree:
     record = require_run(run_id)
     try:
-        return workspace_service.tree(record.workspace, "todo-demo")
+        return run_workspace_service(record).tree(record.workspace, record.project_name)
     except WorkspaceAccessError as error:
         raise workspace_http_error(error) from error
 
@@ -543,7 +688,7 @@ async def get_run_tree(run_id: str) -> WorkspaceTree:
 async def get_run_file(run_id: str, path: str) -> WorkspaceFile:
     record = require_run(run_id)
     try:
-        return workspace_service.read_text(record.workspace, path)
+        return run_workspace_service(record).read_text(record.workspace, path)
     except WorkspaceAccessError as error:
         raise workspace_http_error(error) from error
 
@@ -552,7 +697,7 @@ async def get_run_file(run_id: str, path: str) -> WorkspaceFile:
 async def get_run_changes(run_id: str) -> ChangeSummary:
     record = require_finished_run(run_id)
     try:
-        return workspace_service.changes(record.baseline, record.workspace)
+        return run_workspace_service(record).changes(record.baseline, record.workspace)
     except WorkspaceAccessError as error:
         raise workspace_http_error(error) from error
 
@@ -561,9 +706,63 @@ async def get_run_changes(run_id: str) -> ChangeSummary:
 async def get_run_file_diff(run_id: str, path: str) -> FileDiff:
     record = require_finished_run(run_id)
     try:
-        return workspace_service.file_diff(record.baseline, record.workspace, path)
+        return run_workspace_service(record).file_diff(record.baseline, record.workspace, path)
     except WorkspaceAccessError as error:
         raise workspace_http_error(error) from error
+
+
+@app.get("/api/runs/{run_id}/preview", response_model=RunPreviewResponse)
+async def get_run_preview(run_id: str) -> RunPreviewResponse:
+    record = require_run(run_id)
+    preview_root = run_preview_root(record)
+    return RunPreviewResponse(
+        available=preview_root is not None,
+        url=f"/api/runs/{run_id}/preview-files/" if preview_root is not None else None,
+    )
+
+
+@app.get("/api/runs/{run_id}/preview-files/{asset_path:path}")
+async def get_run_preview_file(run_id: str, asset_path: str = "") -> Response:
+    record = require_run(run_id)
+    preview_root = run_preview_root(record)
+    if preview_root is None:
+        raise HTTPException(status_code=404, detail="当前运行没有可预览的网页入口")
+    requested = asset_path or "index.html"
+    target = (preview_root / requested).resolve()
+    try:
+        target.relative_to(preview_root)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="预览文件路径越过允许目录") from error
+    if not target.is_file() or target.suffix.casefold() not in PREVIEW_FILE_SUFFIXES:
+        raise HTTPException(status_code=404, detail="预览文件不存在")
+    media_type, _ = mimetypes.guess_type(target.name)
+    if target.suffix.casefold() in {".html", ".htm"}:
+        prefix = f"/api/runs/{run_id}/preview-files/"
+        try:
+            html = target.read_text(encoding="utf-8")
+        except UnicodeError as error:
+            raise HTTPException(status_code=415, detail="预览 HTML 不是 UTF-8 编码") from error
+        html = html.replace('src="/', f'src="{prefix}').replace(
+            'href="/', f'href="{prefix}'
+        )
+        return Response(
+            content=html,
+            media_type="text/html",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+    return FileResponse(
+        target,
+        media_type=media_type or "application/octet-stream",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
+def run_preview_root(record: RunRecord) -> Path | None:
+    for candidate in (record.workspace / "dist", record.workspace):
+        resolved = candidate.resolve()
+        if (resolved / "index.html").is_file():
+            return resolved
+    return None
 
 
 @app.get("/api/runs/{run_id}/events")
@@ -626,8 +825,37 @@ async def discard_run(run_id: str) -> RunSnapshot:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
 
-def project_root() -> Path:
-    return repository_root / "examples" / "todo-demo"
+def require_project(project_id: str | None = None) -> ProjectRecord:
+    project = project_registry.get(project_id) if project_id else project_registry.get_active()
+    if project is None:
+        raise HTTPException(status_code=404, detail="请先选择或添加一个项目文件夹")
+    try:
+        project_registry.require_root(project.id)
+    except ProjectRegistrationError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return project
+
+
+def has_active_work() -> bool:
+    has_active_message = any(not task.done() for task in active_message_tasks.values())
+    return has_active_message or run_manager.has_running()
+
+
+def ensure_project_change_available() -> None:
+    if has_active_work():
+        raise HTTPException(status_code=409, detail="当前任务仍在处理中，结束后才能切换项目")
+
+
+def project_response(project: ProjectRecord) -> ProjectResponse:
+    return ProjectResponse(**project.model_dump(), ready=Path(project.root_path).is_dir())
+
+
+def project_workspace_service(project: ProjectRecord) -> WorkspaceService:
+    return WorkspaceService(ignored_names=frozenset(project.ignored_names))
+
+
+def run_workspace_service(record: RunRecord) -> WorkspaceService:
+    return WorkspaceService(ignored_names=record.project_ignored_names)
 
 
 def require_run(run_id: str) -> RunRecord:

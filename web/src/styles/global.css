@@ -18,6 +18,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .brand-name { font-size: 17px; font-weight: 600; }
 .project-separator, .project-name { color: #8b908c; }
 .project-name { font: 14px "Cascadia Code", monospace; }
+.project-switcher { max-width: 260px; height: 31px; padding: 0 26px 0 8px; border: 1px solid #d9d8d2; border-radius: 5px; color: #414844; background: #fffefa; font-size: 13px; cursor: pointer; }
+.project-manage-button { width: 31px; height: 31px; display: grid; place-items: center; border: 1px solid #d9d8d2; border-radius: 5px; color: #626965; background: #f7f6f2; cursor: pointer; }
+.project-manage-button:hover { color: #244bb5; border-color: #b8c6f5; background: #f2f5ff; }
+.project-manage-button:disabled, .project-switcher:disabled { cursor: not-allowed; opacity: .48; }
 .topbar-actions { gap: 10px; }
 .connection-state { gap: 7px; margin-right: 6px; color: #6b716d; font-size: 14px; }
 .connection-dot { width: 7px; height: 7px; border-radius: 50%; background: #c87816; }
@@ -42,6 +46,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .panel-heading { height: 44px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e4e3de; font-size: 14px; font-weight: 600; }
 .session-heading { gap: 7px; }
 .session-heading select { min-width: 0; flex: 1; border: 0; color: #333a36; background: transparent; font-size: 12px; font-weight: 600; text-overflow: ellipsis; }
+.session-project { max-width: 92px; overflow: hidden; color: #8b908c; font: 9px "Cascadia Code", monospace; text-overflow: ellipsis; white-space: nowrap; }
 .session-heading > button { width: 28px; height: 28px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid #deddd7; border-radius: 4px; color: #626965; background: #f7f6f2; cursor: pointer; }
 .session-heading .run-state { flex: 0 0 auto; }
 .stage-label, .run-state { color: #8b908c; font-size: 12px; font-weight: 500; text-transform: uppercase; }
@@ -277,6 +282,33 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .workspace-tabs .workspace-tab--active::after { content: ""; position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: #3b6cff; }
 .workspace-tabs button span { min-width: 19px; height: 19px; padding: 0 4px; display: grid; place-items: center; border-radius: 9px; color: #65706a; background: #e8e8e2; font: 10px "Cascadia Code", monospace; }
 .workspace-view { min-height: 0; overflow: hidden; }
+.workspace-tabs button:disabled { cursor: not-allowed; opacity: .38; }
+.preview-workspace { width: 100%; height: 100%; min-height: 0; background: #fff; }
+.preview-workspace iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+
+.project-dialog-backdrop { position: fixed; z-index: 50; inset: 0; display: grid; place-items: center; padding: 24px; background: rgb(29 33 31 / 42%); backdrop-filter: blur(3px); }
+.project-dialog { width: min(560px, calc(100vw - 40px)); max-height: calc(100vh - 48px); overflow-y: auto; border: 1px solid #d4d3cd; border-radius: 12px; background: #fffefa; box-shadow: 0 26px 90px rgb(21 26 23 / 24%); }
+.project-dialog > header { padding: 20px 22px 16px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.project-dialog > header span { color: #3b6cff; font: 10px "Cascadia Code", monospace; letter-spacing: .12em; }
+.project-dialog > header h2 { margin: 5px 0 0; font-size: 20px; }
+.project-dialog > header button { width: 30px; height: 30px; display: grid; place-items: center; border: 0; color: #777d79; background: transparent; cursor: pointer; }
+.project-dialog > nav { padding: 0 22px; display: flex; gap: 4px; border-bottom: 1px solid #e3e2dc; }
+.project-dialog > nav button { height: 38px; padding: 0 10px; border: 0; border-bottom: 2px solid transparent; color: #777d79; background: transparent; font-size: 12px; cursor: pointer; }
+.project-dialog > nav .project-dialog__tab--active { border-bottom-color: #3b6cff; color: #244bb5; font-weight: 600; }
+.project-dialog__body { padding: 20px 22px 22px; display: grid; gap: 14px; }
+.project-dialog__hero { padding: 14px; display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: center; gap: 10px; border: 1px solid #dbe2fa; border-radius: 7px; color: #315bb5; background: #f4f6ff; }
+.project-dialog__hero strong { color: #333a36; font-size: 13px; }
+.project-dialog__hero p, .project-dialog__note { margin: 4px 0 0; color: #777d79; font-size: 11px; line-height: 1.55; }
+.project-dialog__body label { display: grid; gap: 6px; color: #626965; font-size: 11px; font-weight: 600; }
+.project-dialog__body input, .project-dialog__body select, .project-dialog__body textarea { width: 100%; padding: 8px 9px; border: 1px solid #d9d8d2; border-radius: 5px; color: #333a36; background: #fff; font: 12px/1.45 "Cascadia Code", "Microsoft YaHei", monospace; resize: vertical; }
+.project-dialog__path-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+.project-dialog__path-row button, .project-dialog__secondary { padding: 0 12px; border: 1px solid #d3d2cc; border-radius: 5px; color: #525955; background: #f7f6f2; cursor: pointer; }
+.project-dialog__primary { min-height: 36px; padding: 0 14px; display: flex; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 5px; color: #fff; background: #1d211f; font-size: 12px; font-weight: 600; cursor: pointer; }
+.project-dialog__secondary { min-height: 34px; }
+.project-dialog button:disabled { cursor: not-allowed; opacity: .45; }
+.project-dialog__divider { display: flex; align-items: center; gap: 10px; color: #9a9e9b; font-size: 10px; }
+.project-dialog__divider::before, .project-dialog__divider::after { content: ""; height: 1px; flex: 1; background: #e3e2dc; }
+.project-dialog__error { margin: 0 22px 20px; padding: 9px 10px; border-left: 2px solid #c4473a; color: #963d34; background: #fff4f2; font-size: 11px; line-height: 1.5; }
 
 .canvas-workspace { height: 100%; min-height: 0; display: grid; grid-template-rows: 48px minmax(0, 1fr); }
 .canvas-toolbar { padding: 7px 10px; display: flex; align-items: center; gap: 7px; border-bottom: 1px solid #e4e3de; background: #fffefa; }
