@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from app.agent.model_client import OpenAIResponsesModelClient
+from app.agent.model_client import OpenAIResponsesModelClient, classify_model_error
 from app.agent.models import IntentBrief, IntentRequirement, ToolResult
 from app.agent.tools import ToolRegistry
 
@@ -58,6 +58,11 @@ async def test_responses_client_maps_function_calls_and_continues_with_tool_resu
             }""",
         ),
     )
+    first_response.usage = SimpleNamespace(
+        input_tokens=120,
+        output_tokens=30,
+        total_tokens=150,
+    )
     second_response = response(
         "response-2",
         function_call(
@@ -95,6 +100,7 @@ async def test_responses_client_maps_function_calls_and_continues_with_tool_resu
     assert first_turn.action == "读取提交处理器"
     assert first_turn.related_requirement_ids == ["REQ-1"]
     assert first_turn.tool_calls[0].arguments == {"path": "src/main.js"}
+    assert first_turn.usage.total_tokens == 150
     assert fake_client.responses.requests[0]["model"] == "test-model"
     assert fake_client.responses.requests[0]["tools"] == registry.schemas()
     second_request = fake_client.responses.requests[1]
@@ -138,3 +144,34 @@ async def test_tool_schema_contains_visible_action_metadata() -> None:
     )
     assert "requirements" in report_schema["parameters"]["required"]
     assert "requirements" in report_schema["parameters"]["properties"]
+
+
+async def test_responses_client_summarizes_context_and_records_usage() -> None:
+    summary_response = SimpleNamespace(
+        output_text="- Goal: keep the task working\n- Next: rerun tests",
+        usage={"input_tokens": 80, "output_tokens": 20, "total_tokens": 100},
+    )
+    fake_client = FakeOpenAIClient([summary_response])
+    client = OpenAIResponsesModelClient(ToolRegistry(), "test-model", client=fake_client)
+
+    summary, usage = await client.summarize_context("long transcript", "older summary")
+
+    assert "rerun tests" in summary
+    assert usage is not None
+    assert usage.total_tokens == 100
+    assert "tools" not in fake_client.responses.requests[0]
+
+
+def test_model_errors_are_classified_by_retryability() -> None:
+    class ProviderError(Exception):
+        def __init__(self, status_code: int) -> None:
+            super().__init__(f"provider returned {status_code}")
+            self.status_code = status_code
+
+    temporary = classify_model_error(ProviderError(429))
+    configuration = classify_model_error(ProviderError(401))
+
+    assert temporary.kind == "retryable_model"
+    assert temporary.retryable is True
+    assert configuration.kind == "configuration"
+    assert configuration.retryable is False

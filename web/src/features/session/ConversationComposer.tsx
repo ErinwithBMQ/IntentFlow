@@ -1,48 +1,39 @@
-import { Paperclip, Send } from "lucide-react";
+import { Paperclip, Send, ShieldCheck } from "lucide-react";
 import type { KeyboardEvent } from "react";
 
-import type { ConversationMode } from "../../services/api";
+import type { ApprovalMode } from "../../services/api";
 
 type ConversationComposerProps = {
   value: string;
-  mode: ConversationMode;
+  approvalMode: ApprovalMode;
   attachCanvas: boolean;
   sending: boolean;
-  agentBlocked: boolean;
-  agentBlockReason: string;
+  pendingReviewNotice: string;
   error: string;
   onChange: (value: string) => void;
-  onModeChange: (mode: ConversationMode) => void;
+  onApprovalModeChange: (mode: ApprovalMode) => void;
   onAttachCanvasChange: (attached: boolean) => void;
   onSubmit: () => void;
 };
 
-const modeLabels: Record<ConversationMode, string> = {
-  ask: "Ask",
-  plan: "Plan",
-  agent: "Agent",
-};
-
-const modeDescriptions: Record<ConversationMode, string> = {
-  ask: "只读查看项目并回答，不修改或运行",
-  plan: "只读查看项目并整理方案，不修改",
-  agent: "以当前消息为主，按需参考附件并执行",
+const approvalDescriptions: Record<ApprovalMode, string> = {
+  ask: "修改前请求批准",
+  auto: "本轮自动允许受控修改",
 };
 
 export function ConversationComposer({
   value,
-  mode,
+  approvalMode,
   attachCanvas,
   sending,
-  agentBlocked,
-  agentBlockReason,
+  pendingReviewNotice,
   error,
   onChange,
-  onModeChange,
+  onApprovalModeChange,
   onAttachCanvasChange,
   onSubmit,
 }: ConversationComposerProps) {
-  const submitDisabled = sending || !value.trim() || (mode === "agent" && agentBlocked);
+  const submitDisabled = sending || !value.trim();
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -62,20 +53,19 @@ export function ConversationComposer({
         onKeyDown={handleKeyDown}
       />
       <div className="conversation-composer__toolbar">
-        <div className="conversation-mode" aria-label="对话模式">
-          {(Object.keys(modeLabels) as ConversationMode[]).map((item) => (
-            <button
-              className={item === mode ? "conversation-mode--active" : ""}
-              type="button"
-              key={item}
-              title={modeDescriptions[item]}
-              disabled={sending}
-              onClick={() => onModeChange(item)}
-            >
-              {modeLabels[item]}
-            </button>
-          ))}
-        </div>
+        <label className="permission-mode">
+          <ShieldCheck size={12} />
+          <span>权限</span>
+          <select
+            aria-label="Agent 权限"
+            value={approvalMode}
+            disabled={sending}
+            onChange={(event) => onApprovalModeChange(event.target.value as ApprovalMode)}
+          >
+            <option value="ask">请求批准</option>
+            <option value="auto">自动允许</option>
+          </select>
+        </label>
         <label className="canvas-attachment-toggle" title="发送时保存当前 Canvas 的不可变快照">
           <input
             type="checkbox"
@@ -89,7 +79,7 @@ export function ConversationComposer({
           className="conversation-send"
           type="button"
           disabled={submitDisabled}
-          title={mode === "agent" && agentBlocked ? agentBlockReason : "发送"}
+          title="发送"
           onClick={onSubmit}
         >
           <Send size={14} />
@@ -98,10 +88,8 @@ export function ConversationComposer({
       <div className="conversation-composer__hint">
         <span>
           {sending
-            ? "正在处理消息…"
-            : mode === "agent" && agentBlocked
-              ? agentBlockReason
-              : modeDescriptions[mode]}
+            ? "Agent 正在读取会话并判断下一步…"
+            : pendingReviewNotice || approvalDescriptions[approvalMode]}
         </span>
         <span>Enter 发送 · Shift+Enter 换行</span>
       </div>

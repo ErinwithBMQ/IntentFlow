@@ -182,14 +182,50 @@ async def test_agent_request_can_reply_without_running_when_latest_message_is_gr
     )
 
     assert decision.brief is None
+    assert decision.action == "answer"
     assert decision.response == "你好，请告诉我这次希望修改或验证什么。"
     request = fake_client.responses.requests[0]
     assert [tool["name"] for tool in request["tools"]] == [
         "submit_intent_brief",
+        "submit_plan",
         "respond_to_user",
     ]
     assert "message-1" in request["input"][0]["content"]
     assert "src/main.js" in request["input"][0]["content"]
+
+
+async def test_unified_agent_can_return_a_plan_without_starting_execution() -> None:
+    canvas = IntentCanvas(notes=[note("message-1", "先规划筛选功能", "idea")])
+    fake_client = FakeOpenAIClient(
+        {
+            "title": "规划筛选",
+            "goal": "规划待办筛选功能",
+            "requirements": [
+                {
+                    "id": "REQ-01",
+                    "description": "设计筛选交互",
+                    "acceptance_criteria": ["给出可执行的实现步骤"],
+                    "source_ids": ["message-1"],
+                }
+            ],
+            "constraints": [],
+        },
+        tool_name="submit_plan",
+    )
+
+    decision = await AIIntentCompiler(
+        "test-model",
+        client=fake_client,
+    ).compile_agent_request(
+        canvas,
+        "message-1",
+        session_context='{"review_status":"discarded"}',
+    )
+
+    assert decision.action == "propose"
+    assert decision.brief is not None
+    assert decision.brief.title == "规划筛选"
+    assert "discarded" in fake_client.responses.requests[0]["input"][0]["content"]
 
 
 async def test_plan_request_answers_project_question_without_manufacturing_a_plan() -> None:

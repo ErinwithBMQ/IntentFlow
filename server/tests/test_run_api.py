@@ -397,6 +397,28 @@ async def test_allow_for_run_automatically_approves_later_patches(tmp_path, monk
     assert len(required_events) == 1
 
 
+async def test_run_can_start_with_automatic_approval_policy(tmp_path) -> None:
+    make_repository(tmp_path)
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=modifying_model_factory,
+        command_factory=command_factory,
+    )
+
+    snapshot = manager.start(
+        IntentBrief.model_validate(run_payload()["intent"]),
+        approval_mode="auto",
+    )
+    await wait_until_finished(manager, snapshot.id)
+
+    record = manager.get(snapshot.id)
+    assert record is not None
+    assert record.approval_mode == "auto"
+    assert record.approvals[0].status == "approved"
+    assert not [event for event in record.events if event.kind == "approval_required"]
+    assert (record.workspace / "source.txt").read_text(encoding="utf-8") == "approved"
+
+
 async def test_rejected_patch_is_returned_to_model_without_changing_file(
     tmp_path,
     monkeypatch,

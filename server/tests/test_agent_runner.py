@@ -1,8 +1,9 @@
 import asyncio
 import sys
 
-from app.agent.model_client import FakeModelClient
-from app.agent.models import IntentBrief, IntentRequirement, ModelTurn, ToolCall
+from app.agent.context import ContextBudget, ContextManager
+from app.agent.model_client import FakeModelClient, ModelClientError
+from app.agent.models import ContextSummary, IntentBrief, IntentRequirement, ModelTurn, ToolCall
 from app.agent.runner import AgentRunner
 from app.agent.tools import ToolContext, ToolRegistry
 
@@ -98,7 +99,8 @@ async def test_fake_model_completes_a_tool_loop(tmp_path) -> None:
     assert source.read_text(encoding="utf-8") == "export const value = 2;\n"
     assert [event.sequence for event in result.events] == list(range(1, len(result.events) + 1))
     assert any(event.tool_name == "run_command" for event in result.events)
-    assert len(model.received_histories[-1]) == 6
+    assert len(model.received_histories[-1]) == 7
+    assert isinstance(model.received_histories[-1][0], ContextSummary)
     assert result.report.evidence == ["test exited with code 0"]
     requirement = result.report.requirement_results[0]
     assert requirement.requirement_id == "REQ-1"
@@ -206,6 +208,180 @@ async def test_step_limit_fails_an_unfinished_run(tmp_path) -> None:
 
     assert result.status == "failed"
     assert "step limit" in result.report.summary
+
+
+async def test_runner_retries_temporary_model_error(tmp_path) -> None:
+    class FlakyModel:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def next_turn(self, intent, history):
+            del intent, history
+            self.attempts += 1
+            if self.attempts == 1:
+                raise ModelClientError(
+                    "temporary timeout",
+                    kind="retryable_model",
+                    retryable=True,
+                )
+            return ModelTurn(
+                action="报告无法完成",
+                reason="本测试只验证模型重试边界",
+                tool_calls=[
+                    ToolCall(
+                        id="report",
+                        name="report_result",
+                        arguments={
+                            "status": "failed",
+                            "summary": "已从临时错误恢复",
+                            "requirements": [
+                                {
+                                    "requirement_id": "REQ-1",
+                                    "status": "unresolved",
+                                    "summary": "未执行实际修改",
+                                }
+                            ],
+                        },
+                    )
+                ],
+            )
+
+    model = FlakyModel()
+    result = await AgentRunner(model, ToolRegistry(), ToolContext(tmp_path, {})).run(
+        make_intent()
+    )
+
+    assert model.attempts == 2
+    assert result.report.summary == "已从临时错误恢复"
+
+
+async def test_runner_does_not_retry_configuration_error(tmp_path) -> None:
+    class MisconfiguredModel:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def next_turn(self, intent, history):
+            del intent, history
+            self.attempts += 1
+            raise ModelClientError(
+                "invalid API key",
+                kind="configuration",
+                retryable=False,
+            )
+
+    model = MisconfiguredModel()
+    result = await AgentRunner(model, ToolRegistry(), ToolContext(tmp_path, {})).run(
+        make_intent()
+    )
+
+    assert model.attempts == 1
+    assert result.status == "failed"
+    assert result.report.unresolved == ["configuration: invalid API key"]
+
+
+async def test_runner_stops_after_retry_budget_is_exhausted(tmp_path) -> None:
+    class UnavailableModel:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def next_turn(self, intent, history):
+            del intent, history
+            self.attempts += 1
+            raise ModelClientError(
+                "service unavailable",
+                kind="retryable_model",
+                retryable=True,
+            )
+
+    model = UnavailableModel()
+    result = await AgentRunner(
+        model,
+        ToolRegistry(),
+        ToolContext(tmp_path, {}),
+        max_model_retries=2,
+    ).run(make_intent())
+
+    assert model.attempts == 3
+    assert result.status == "failed"
+    assert result.report.unresolved == ["retryable_model: service unavailable"]
+
+
+async def test_runner_continues_after_context_compaction(tmp_path) -> None:
+    (tmp_path / "large.txt").write_text("large content\n" * 4_000, encoding="utf-8")
+    model = FakeModelClient(
+        [
+            ModelTurn(
+                action=f"读取大文件第 {index} 次",
+                reason="制造足够长的工具历史以触发压缩",
+                tool_calls=[
+                    ToolCall(
+                        id=f"read-{index}",
+                        name="read_file",
+                        arguments={"path": "large.txt"},
+                    )
+                ],
+            )
+            for index in range(3)
+        ]
+        + [
+            ModelTurn(
+                action="运行测试",
+                reason="摘要后继续执行真实工具",
+                related_requirement_ids=["REQ-1"],
+                tool_calls=[
+                    ToolCall(id="test", name="run_command", arguments={"command": "test"})
+                ],
+            ),
+            ModelTurn(
+                action="报告结果",
+                reason="上下文压缩后任务仍然完成",
+                tool_calls=[
+                    ToolCall(
+                        id="report",
+                        name="report_result",
+                        arguments={
+                            "status": "completed",
+                            "summary": "压缩后继续执行成功",
+                            "evidence": ["test passed"],
+                            "requirements": [
+                                {
+                                    "requirement_id": "REQ-1",
+                                    "status": "verified",
+                                    "summary": "压缩后验证通过",
+                                }
+                            ],
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+    manager = ContextManager(
+        make_intent(),
+        budget=ContextBudget(
+            context_window_tokens=500,
+            reserve_output_tokens=100,
+            keep_recent_tokens=80,
+            compact_at_ratio=0.8,
+            max_tool_output_characters=400,
+        ),
+    )
+    runner = AgentRunner(
+        model,
+        ToolRegistry(),
+        ToolContext(
+            tmp_path,
+            {"test": (sys.executable, "-c", "raise SystemExit(0)")},
+        ),
+        context_manager=manager,
+    )
+
+    result = await runner.run(make_intent())
+
+    assert result.status == "completed"
+    assert manager.checkpoint.compression_count > 0
+    assert "Deterministic fallback summary" in manager.checkpoint.summary
+    assert manager.metrics.model_turns == 5
 
 
 async def test_model_cannot_claim_completion_without_real_verification(tmp_path) -> None:

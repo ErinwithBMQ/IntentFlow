@@ -155,10 +155,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .conversation-composer { padding: 10px 11px 9px; border-top: 1px solid #d9d8d2; background: #fbfaf7; box-shadow: 0 -8px 20px rgb(45 49 46 / 4%); }
 .conversation-composer textarea { width: 100%; min-height: 68px; padding: 9px 10px; display: block; resize: vertical; border: 1px solid #d6d5cf; border-radius: 7px; color: #1d211f; background: #fffefa; font-size: 13px; line-height: 1.5; }
 .conversation-composer__toolbar { margin-top: 7px; display: flex; align-items: center; gap: 7px; }
-.conversation-mode { display: flex; border: 1px solid #d6d5cf; border-radius: 5px; overflow: hidden; }
-.conversation-mode button { height: 27px; padding: 0 7px; border: 0; border-right: 1px solid #deddd7; color: #777d79; background: #f7f6f2; font-size: 10px; cursor: pointer; }
-.conversation-mode button:last-child { border-right: 0; }
-.conversation-mode .conversation-mode--active { color: #fff; background: #3b6cff; }
+.permission-mode { height: 29px; padding: 0 6px; display: flex; align-items: center; gap: 4px; border: 1px solid #d6d5cf; border-radius: 5px; color: #626965; background: #f7f6f2; font-size: 10px; }
+.permission-mode select { max-width: 108px; border: 0; color: #3f4742; background: transparent; font-size: 10px; outline: none; cursor: pointer; }
 .canvas-attachment-toggle { display: flex; align-items: center; gap: 4px; color: #626965; font-size: 10px; cursor: pointer; }
 .canvas-attachment-toggle input { margin: 0; }
 .conversation-send { width: 31px; height: 31px; margin-left: auto; display: grid; place-items: center; border: 0; border-radius: 5px; color: #fff; background: #1d211f; cursor: pointer; }

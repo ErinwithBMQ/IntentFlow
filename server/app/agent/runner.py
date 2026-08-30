@@ -1,26 +1,36 @@
 import asyncio
 from collections.abc import Awaitable, Callable
+from time import monotonic
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from app.agent.model_client import ModelClient
+from app.agent.context import ContextBudget, ContextManager
+from app.agent.model_client import ModelClient, ModelClientError
 from app.agent.models import (
     AgentHistoryItem,
+    ContextCheckpoint,
     IntentBrief,
     ModelTurn,
     RequirementClaim,
     RequirementResult,
     RunEvent,
+    RunMetrics,
     RunReport,
     RunResult,
     ToolApproval,
     ToolCall,
+    ToolError,
     ToolResult,
 )
 from app.agent.tools import ToolContext, ToolExecution, ToolRegistry
 
 EventSink = Callable[[RunEvent], Awaitable[None]]
+ContextSink = Callable[
+    [ContextCheckpoint, RunMetrics, list[AgentHistoryItem]],
+    Awaitable[None],
+]
 DEFAULT_MAX_STEPS = 12
+DEFAULT_MODEL_RETRIES = 2
 ApprovalOutcome = Literal["approved", "rejected", "cancelled"]
 
 
@@ -42,6 +52,14 @@ class _AutoApprovalController:
 
 async def _ignore_event(event: RunEvent) -> None:
     del event
+
+
+async def _ignore_context(
+    checkpoint: ContextCheckpoint,
+    metrics: RunMetrics,
+    history: list[AgentHistoryItem],
+) -> None:
+    del checkpoint, metrics, history
 
 
 class _RequirementTracker:
@@ -175,6 +193,11 @@ class AgentRunner:
         max_steps: int = DEFAULT_MAX_STEPS,
         event_sink: EventSink = _ignore_event,
         approval_controller: ApprovalController | None = None,
+        context_manager: ContextManager | None = None,
+        context_budget: ContextBudget | None = None,
+        prior_context: str = "",
+        context_sink: ContextSink = _ignore_context,
+        max_model_retries: int = DEFAULT_MODEL_RETRIES,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
@@ -184,13 +207,32 @@ class AgentRunner:
         self.max_steps = max_steps
         self.event_sink = event_sink
         self.approval_controller = approval_controller or _AutoApprovalController()
+        self.context_manager = context_manager
+        self.context_budget = context_budget
+        self.prior_context = prior_context
+        self.context_sink = context_sink
+        self.max_model_retries = max_model_retries
         self.events: list[RunEvent] = []
+        self._history: list[AgentHistoryItem] = []
 
     async def run(self, intent: IntentBrief) -> RunResult:
         self.events = []
         history: list[AgentHistoryItem] = []
+        self._history = history
         verification_evidence: list[str] = []
         tracker = _RequirementTracker(intent)
+        if self.context_manager is None:
+            summarizer = (
+                self.model_client
+                if hasattr(self.model_client, "summarize_context")
+                else None
+            )
+            self.context_manager = ContextManager(
+                intent,
+                budget=self.context_budget,
+                summarizer=summarizer,
+                prior_context=self.prior_context,
+            )
         await self._emit(
             kind="run_started",
             phase="planning",
@@ -204,18 +246,28 @@ class AgentRunner:
                 return await self._finish_stopped(step - 1, tracker)
 
             try:
-                turn = await self._next_turn_or_stop(intent, history)
+                prepared = await self.context_manager.prepare(intent, history, step=step)
+                started_at = monotonic()
+                turn = await self._next_turn_with_retry(intent, prepared.history)
                 if turn is None:
                     return await self._finish_stopped(step - 1, tracker)
+                self.context_manager.record_turn(
+                    turn,
+                    prepared,
+                    step=step,
+                    duration_ms=max(0, int((monotonic() - started_at) * 1000)),
+                )
+                history.append(turn)
+                await self._sync_context()
             except Exception as error:
+                kind = error.kind if isinstance(error, ModelClientError) else "unexpected"
                 report = RunReport(
                     status="failed",
                     summary="模型无法给出下一步动作",
-                    unresolved=[str(error)],
+                    unresolved=[f"{kind}: {error}"],
                 )
                 return await self._finish(report, step, tracker)
 
-            history.append(turn)
             await self._emit(
                 kind="model_turn",
                 phase="planning",
@@ -258,6 +310,8 @@ class AgentRunner:
                             approval_status="approval_required",
                         )
                     outcome = await self.approval_controller.wait(approval.id)
+                    self.context_manager.record_approval(preview.target, outcome)
+                    await self._sync_context()
                     if outcome == "cancelled":
                         return await self._finish_stopped(step, tracker)
                     if requires_user:
@@ -279,8 +333,7 @@ class AgentRunner:
                             approval_status=outcome,
                         )
                     if outcome == "rejected":
-                        history.append(
-                            ToolResult(
+                        rejected_result = ToolResult(
                                 call_id=call.id,
                                 tool_name=call.name,
                                 ok=False,
@@ -289,9 +342,20 @@ class AgentRunner:
                                     "The proposed patch was not applied. Adjust the plan or "
                                     "finish with the requirement unresolved."
                                 ),
+                                error=ToolError(
+                                    kind="user_rejected",
+                                    message="User rejected this file modification",
+                                    retryable=False,
+                                    suggestion=(
+                                        "Choose a different approach or leave the "
+                                        "requirement unresolved."
+                                    ),
+                                ),
                             )
-                        )
-                        break
+                        history.append(rejected_result)
+                        self.context_manager.record_tool(call, rejected_result)
+                        await self._sync_context()
+                        continue
 
                 await self._emit_tool_started(call, turn.reason, related_ids)
                 execution = prepared_execution or await self.registry.execute(call, self.context)
@@ -310,6 +374,8 @@ class AgentRunner:
                     verification_evidence,
                 )
                 history.append(execution.result)
+                self.context_manager.record_tool(call, execution.result)
+                await self._sync_context()
                 await self._emit(
                     kind="tool_finished",
                     phase="verifying" if call.name == "run_command" else "acting",
@@ -333,6 +399,20 @@ class AgentRunner:
             unresolved=["The model did not call report_result before the step limit"],
         )
         return await self._finish(report, self.max_steps, tracker)
+
+    async def _next_turn_with_retry(
+        self,
+        intent: IntentBrief,
+        history: list[AgentHistoryItem],
+    ) -> ModelTurn | None:
+        for attempt in range(self.max_model_retries + 1):
+            try:
+                return await self._next_turn_or_stop(intent, history)
+            except ModelClientError as error:
+                if not error.retryable or attempt >= self.max_model_retries:
+                    raise
+                await asyncio.sleep(0)
+        raise RuntimeError("unreachable model retry state")
 
     async def _next_turn_or_stop(
         self,
@@ -438,6 +518,10 @@ class AgentRunner:
             reason="Agent 已提交带证据的最终报告",
             evidence=report.evidence,
         )
+        if self.context_manager is not None:
+            self.context_manager.checkpoint.unresolved = list(report.unresolved)
+            self.context_manager.finish()
+            await self._sync_context()
         return RunResult(status=report.status, report=report, events=self.events, steps=steps)
 
     async def _finish_stopped(
@@ -457,6 +541,10 @@ class AgentRunner:
             action=report.summary,
             reason="收到停止信号",
         )
+        if self.context_manager is not None:
+            self.context_manager.checkpoint.unresolved = list(report.unresolved)
+            self.context_manager.finish()
+            await self._sync_context()
         return RunResult(
             status="stopped",
             report=report.model_copy(update={"requirement_results": tracker.results()}),
@@ -468,6 +556,15 @@ class AgentRunner:
         event = RunEvent(sequence=len(self.events) + 1, **values)
         self.events.append(event)
         await self.event_sink(event)
+
+    async def _sync_context(self) -> None:
+        if self.context_manager is None:
+            return
+        await self.context_sink(
+            self.context_manager.checkpoint.model_copy(deep=True),
+            self.context_manager.metrics.model_copy(deep=True),
+            [item.model_copy(deep=True) for item in self._history],
+        )
 
     @staticmethod
     def _tool_target(call: ToolCall) -> str | None:

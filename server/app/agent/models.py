@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -31,6 +33,14 @@ class ModelTurn(BaseModel):
     reason: str
     related_requirement_ids: list[str] = Field(default_factory=list)
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    provider_items: list[Any] = Field(default_factory=list, exclude=True)
+    usage: ModelUsage | None = None
+
+
+class ModelUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
 
 
 class ToolResult(BaseModel):
@@ -39,6 +49,66 @@ class ToolResult(BaseModel):
     ok: bool
     summary: str
     output: str = ""
+    error: ToolError | None = None
+
+
+class ToolError(BaseModel):
+    kind: Literal[
+        "invalid_arguments",
+        "path_error",
+        "not_found",
+        "conflict",
+        "io_error",
+        "verification_failed",
+        "timeout",
+        "cancelled",
+        "user_rejected",
+        "unknown_tool",
+    ]
+    message: str
+    retryable: bool
+    suggestion: str = ""
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextSummary(BaseModel):
+    content: str
+
+
+class ContextCheckpoint(BaseModel):
+    summary: str = ""
+    covered_history_items: int = 0
+    current_goal: str = ""
+    constraints: list[str] = Field(default_factory=list)
+    plan: list[str] = Field(default_factory=list)
+    modified_files: list[str] = Field(default_factory=list)
+    verification_results: list[str] = Field(default_factory=list)
+    approval_decisions: list[str] = Field(default_factory=list)
+    unresolved: list[str] = Field(default_factory=list)
+    compression_count: int = 0
+    discarded_content_types: list[str] = Field(default_factory=list)
+
+
+class ContextRoundMetrics(BaseModel):
+    step: int
+    estimated_input_tokens: int
+    actual_input_tokens: int | None = None
+    output_tokens: int | None = None
+    compressed: bool = False
+    discarded_content_types: list[str] = Field(default_factory=list)
+    model_duration_ms: int = 0
+
+
+class RunMetrics(BaseModel):
+    model_turns: int = 0
+    tool_calls: int = 0
+    estimated_input_tokens: int = 0
+    actual_input_tokens: int = 0
+    output_tokens: int = 0
+    compression_count: int = 0
+    discarded_content_types: list[str] = Field(default_factory=list)
+    duration_ms: int = 0
+    rounds: list[ContextRoundMetrics] = Field(default_factory=list)
 
 
 class ToolApproval(BaseModel):
@@ -105,4 +175,4 @@ class RunResult(BaseModel):
     steps: int
 
 
-AgentHistoryItem = ModelTurn | ToolResult
+AgentHistoryItem = ModelTurn | ToolResult | ContextSummary

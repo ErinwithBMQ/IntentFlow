@@ -3,7 +3,6 @@ import { Fragment, Suspense, lazy, type ReactNode } from "react";
 
 import type {
   ConversationMessage,
-  ConversationMode,
   RunSnapshot,
 } from "../../services/api";
 
@@ -16,14 +15,8 @@ type SessionConversationProps = {
   runs: RunSnapshot[];
   selectedRunId: string | null;
   selectedRunDetail: ReactNode;
-  respondingMode: ConversationMode | null;
+  responding: boolean;
   onSelectRun: (run: RunSnapshot) => void;
-};
-
-const modeLabels: Record<ConversationMode, string> = {
-  ask: "Ask",
-  plan: "Plan",
-  agent: "Agent",
 };
 
 const runStatusLabels: Record<RunSnapshot["status"], string> = {
@@ -33,18 +26,12 @@ const runStatusLabels: Record<RunSnapshot["status"], string> = {
   stopped: "已停止",
 };
 
-const responseStatusLabels: Record<ConversationMode, string> = {
-  ask: "正在阅读项目并回复…",
-  plan: "正在阅读项目并整理计划…",
-  agent: "正在理解需求并判断下一步…",
-};
-
 export function SessionConversation({
   messages,
   runs,
   selectedRunId,
   selectedRunDetail,
-  respondingMode,
+  responding,
   onSelectRun,
 }: SessionConversationProps) {
   const runById = new Map(runs.map((run) => [run.id, run]));
@@ -72,7 +59,6 @@ export function SessionConversation({
               <div className="session-message__bubble">
                 <div className="session-message__meta">
                   <span>{message.role === "user" ? "你" : "IntentFlow"}</span>
-                  <small>{modeLabels[message.mode]}</small>
                 </div>
                 {message.role === "assistant" ? (
                   <div className="session-message__markdown">
@@ -118,7 +104,7 @@ export function SessionConversation({
           </Fragment>
         );
       })}
-      {respondingMode && (
+      {responding && (
         <section className="session-message session-message--assistant session-message--pending">
           <div className="conversation-avatar">
             <Sparkles size={14} />
@@ -126,9 +112,8 @@ export function SessionConversation({
           <div className="session-message__bubble" aria-live="polite">
             <div className="session-message__meta">
               <span>IntentFlow</span>
-              <small>{modeLabels[respondingMode]}</small>
             </div>
-            <p><LoaderCircle className="spin" size={13} />{responseStatusLabels[respondingMode]}</p>
+            <p><LoaderCircle className="spin" size={13} />正在读取会话并判断下一步…</p>
           </div>
         </section>
       )}

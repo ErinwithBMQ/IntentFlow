@@ -10,6 +10,7 @@ from app.agent.models import IntentBrief
 from app.conversation_service import (
     ConversationResponder,
     ConversationResponseError,
+    build_conversation_history_text,
     build_project_context,
 )
 from app.intent import (
@@ -22,6 +23,7 @@ from app.intent import (
 )
 from app.intent.models import CanvasNote, CanvasPosition, IntentCanvas
 from app.runs import RunManager, RunRecord, RunReviewError, RunSnapshot
+from app.session_context import ApprovalMode, SessionContextBuilder
 from app.sessions import (
     ConversationMessage,
     ConversationMode,
@@ -75,6 +77,7 @@ workspace_service = WorkspaceService()
 
 class CreateRunRequest(BaseModel):
     intent: IntentBrief
+    approval_mode: ApprovalMode = "ask"
 
 
 class CreateSessionRequest(BaseModel):
@@ -84,6 +87,7 @@ class CreateSessionRequest(BaseModel):
 class SendSessionMessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=20_000)
     mode: ConversationMode = "agent"
+    approval_mode: ApprovalMode | None = None
     attach_canvas: bool = False
     canvas: IntentCanvas | None = None
 
@@ -158,22 +162,17 @@ async def send_session_message(
     session_id: str,
     request: SendSessionMessageRequest,
 ) -> SendSessionMessageResponse:
-    if session_store.get_session(session_id) is None:
+    session = session_store.get_session(session_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="对话不存在")
     content = request.content.strip()
     if not content:
         raise HTTPException(status_code=422, detail="消息内容不能为空")
     if request.attach_canvas and request.canvas is None:
         raise HTTPException(status_code=422, detail="选择附加 Canvas 时必须提供当前画布")
-    if request.mode == "agent":
-        pending_run = session_store.get_pending_review_run(session_id)
-        if pending_run is not None:
-            detail = (
-                "上一轮 Agent 仍在运行，请等待运行结束后应用或放弃修改"
-                if pending_run.status == "running"
-                else "请先应用或放弃上一轮 Agent 修改，再开始下一轮"
-            )
-            raise HTTPException(status_code=409, detail=detail)
+    approval_mode = request.approval_mode or session.approval_mode
+    if request.approval_mode is not None and request.approval_mode != session.approval_mode:
+        session_store.set_approval_mode(session_id, request.approval_mode)
 
     canvas_snapshot = (
         session_store.add_canvas_snapshot(session_id, request.canvas)
@@ -190,6 +189,11 @@ async def send_session_message(
     history = session_store.get_detail(session_id)
     if history is None:
         raise HTTPException(status_code=404, detail="对话不存在")
+    session_context = SessionContextBuilder(session_store).build(
+        session_id,
+        user_message,
+        permission_policy=approval_mode,
+    ).to_prompt_text()
     project_context = build_project_context(
         repository_root / Path(project_record.relative_path)
     )
@@ -200,6 +204,7 @@ async def send_session_message(
                 history.messages,
                 canvas_snapshot.canvas if canvas_snapshot else None,
                 project_context,
+                session_context,
             )
         except ValueError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
@@ -223,6 +228,7 @@ async def send_session_message(
                 compilation_canvas,
                 user_message.id,
                 project_context=project_context,
+                session_context=session_context,
             )
             if decision.brief is None:
                 assistant_message = session_store.add_message(
@@ -241,6 +247,7 @@ async def send_session_message(
                 compilation_canvas,
                 user_message.id,
                 project_context=project_context,
+                session_context=session_context,
             )
             if decision.brief is None:
                 assistant_message = session_store.add_message(
@@ -259,7 +266,7 @@ async def send_session_message(
     except IntentCompileError as error:
         raise HTTPException(status_code=502, detail=f"AI 意图整理失败：{error}") from error
 
-    if request.mode == "plan":
+    if request.mode == "plan" or decision.action == "propose":
         assistant_message = session_store.add_message(
             session_id,
             "assistant",
@@ -272,11 +279,33 @@ async def send_session_message(
             assistant_message=assistant_message,
         )
 
+    pending_run = session_store.get_pending_review_run(session_id)
+    if pending_run is not None:
+        pending_detail = (
+            "上一轮 Agent 仍在运行。你可以继续询问进展，但需要等待它结束并处理修改后，"
+            "才能开始新的执行。"
+            if pending_run.status == "running"
+            else "上一轮 Agent 修改仍待审查。你可以继续询问结果，但需要先应用到项目或放弃修改，"
+            "才能开始新的执行。"
+        )
+        assistant_message = session_store.add_message(
+            session_id,
+            "assistant",
+            "agent",
+            pending_detail,
+        )
+        return SendSessionMessageResponse(
+            user_message=user_message,
+            assistant_message=assistant_message,
+        )
+
     try:
         run = run_manager.start(
             brief,
             session_id=session_id,
             trigger_message_id=user_message.id,
+            prior_context=session_context,
+            approval_mode=approval_mode,
         )
     except RuntimeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -390,13 +419,9 @@ def conversation_canvas(
             position=CanvasPosition(x=0, y=0),
         )
     )
-    prior_context = [
-        f"{item.role}: {item.content}"
-        for item in previous_messages
-        if item.content.strip()
-    ]
+    prior_context = build_conversation_history_text(previous_messages)
     if prior_context:
-        context_text = "此前对话（仅作为上下文）：\n" + "\n".join(prior_context)
+        context_text = "此前对话（仅作为上下文）：\n" + prior_context
         canvas.supplemental_text = "\n\n".join(
             part for part in [canvas.supplemental_text.strip(), context_text] if part
         )
@@ -406,7 +431,7 @@ def conversation_canvas(
 @app.post("/api/runs", response_model=RunSnapshot, status_code=201)
 async def create_run(request: CreateRunRequest) -> RunSnapshot:
     try:
-        return run_manager.start(request.intent)
+        return run_manager.start(request.intent, approval_mode=request.approval_mode)
     except RuntimeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except (OSError, ValueError) as error:

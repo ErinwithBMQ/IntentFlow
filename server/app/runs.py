@@ -9,8 +9,18 @@ from uuid import uuid4
 from dotenv import dotenv_values
 from pydantic import BaseModel, Field
 
+from app.agent.context import ContextBudget
 from app.agent.model_client import ModelClient, OpenAIResponsesModelClient
-from app.agent.models import IntentBrief, RunEvent, RunReport, RunResult, ToolApproval
+from app.agent.models import (
+    AgentHistoryItem,
+    ContextCheckpoint,
+    IntentBrief,
+    RunEvent,
+    RunMetrics,
+    RunReport,
+    RunResult,
+    ToolApproval,
+)
 from app.agent.runner import DEFAULT_MAX_STEPS, AgentRunner
 from app.agent.tools import ToolContext, ToolRegistry
 from app.workspaces import DEFAULT_IGNORED_NAMES, WorkspaceService
@@ -34,6 +44,9 @@ class RunSnapshot(BaseModel):
     approvals: list[ToolApproval] = Field(default_factory=list)
     events: list[RunEvent]
     report: RunReport | None = None
+    context_checkpoint: ContextCheckpoint | None = None
+    metrics: RunMetrics = Field(default_factory=RunMetrics)
+    history: list[AgentHistoryItem] = Field(default_factory=list)
 
 
 class RunRecord:
@@ -49,6 +62,9 @@ class RunRecord:
         intent: IntentBrief | None = None,
         snapshot_sink: Callable[[RunSnapshot], None] | None = None,
         approval_timeout_seconds: float = 300.0,
+        context_checkpoint: ContextCheckpoint | None = None,
+        metrics: RunMetrics | None = None,
+        history: list[AgentHistoryItem] | None = None,
     ) -> None:
         self.id = run_id
         self.workspace = workspace
@@ -67,6 +83,9 @@ class RunRecord:
         self.events: list[RunEvent] = []
         self.pending_finished_event: RunEvent | None = None
         self.report: RunReport | None = None
+        self.context_checkpoint = context_checkpoint
+        self.metrics = metrics or RunMetrics()
+        self.history = history or []
         self.stop_event = asyncio.Event()
         self.changed = asyncio.Condition()
         self.task: asyncio.Task[None] | None = None
@@ -98,6 +117,19 @@ class RunRecord:
     def persist(self) -> None:
         if self.snapshot_sink is not None:
             self.snapshot_sink(self.snapshot())
+
+    async def update_context(
+        self,
+        checkpoint: ContextCheckpoint,
+        metrics: RunMetrics,
+        history: list[AgentHistoryItem],
+    ) -> None:
+        async with self.changed:
+            self.context_checkpoint = checkpoint
+            self.metrics = metrics
+            self.history = history
+            self.changed.notify_all()
+        self.persist()
 
     def register(self, approval: ToolApproval) -> bool:
         if self.approval_mode == "auto":
@@ -179,6 +211,9 @@ class RunRecord:
             approvals=list(self.approvals),
             events=list(self.events),
             report=self.report,
+            context_checkpoint=self.context_checkpoint,
+            metrics=self.metrics,
+            history=self.history,
         )
 
 
@@ -193,6 +228,7 @@ class RunManager:
         workspace_service: WorkspaceService | None = None,
         snapshot_sink: Callable[[RunSnapshot], None] | None = None,
         approval_timeout_seconds: float = 300.0,
+        context_budget: ContextBudget | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
@@ -204,6 +240,7 @@ class RunManager:
         self.workspace_service = workspace_service or WorkspaceService()
         self.snapshot_sink = snapshot_sink
         self.approval_timeout_seconds = approval_timeout_seconds
+        self.context_budget = context_budget
 
     def start(
         self,
@@ -211,6 +248,8 @@ class RunManager:
         *,
         session_id: str | None = None,
         trigger_message_id: str | None = None,
+        prior_context: str = "",
+        approval_mode: Literal["ask", "auto"] = "ask",
     ) -> RunSnapshot:
         if any(record.status == "running" for record in self.records.values()):
             raise RuntimeError("已有 Agent 任务正在运行，请等待完成或先停止它")
@@ -220,6 +259,8 @@ class RunManager:
         else:
             api_key = model = ""
             base_url = None
+        context_budget = self.context_budget or self._context_budget()
+        context_budget.validate_limits()
         run_id = uuid4().hex[:12]
         relative_path = f"runtime-data/runs/{run_id}/todo-demo"
         workspace = self.repository_root / Path(relative_path)
@@ -248,6 +289,7 @@ class RunManager:
             snapshot_sink=self.snapshot_sink,
             approval_timeout_seconds=self.approval_timeout_seconds,
         )
+        record.approval_mode = approval_mode
         self.records[run_id] = record
         record.persist()
         registry = ToolRegistry()
@@ -278,6 +320,9 @@ class RunManager:
             max_steps=self.max_steps,
             event_sink=record.add_event,
             approval_controller=record,
+            context_budget=context_budget,
+            prior_context=prior_context,
+            context_sink=record.update_context,
         )
         record.task = asyncio.create_task(self._execute(record, runner, intent))
         return record.snapshot()
@@ -295,6 +340,9 @@ class RunManager:
             intent=snapshot.intent,
             snapshot_sink=self.snapshot_sink,
             approval_timeout_seconds=self.approval_timeout_seconds,
+            context_checkpoint=snapshot.context_checkpoint,
+            metrics=snapshot.metrics,
+            history=snapshot.history,
         )
         record.status = snapshot.status
         record.review_status = snapshot.review_status
@@ -302,6 +350,9 @@ class RunManager:
         record.report = snapshot.report
         record.approval_mode = snapshot.approval_mode
         record.approvals = list(snapshot.approvals)
+        record.context_checkpoint = snapshot.context_checkpoint
+        record.metrics = snapshot.metrics
+        record.history = list(snapshot.history)
         if record.status == "running":
             record.status = "stopped"
             for approval in record.approvals:
@@ -458,6 +509,21 @@ class RunManager:
         if not api_key or not model:
             raise ValueError("请先在根目录 .env 配置 OPENAI_API_KEY 和 OPENAI_MODEL")
         return api_key, model, base_url
+
+    def _context_budget(self) -> ContextBudget:
+        config = dotenv_values(self.repository_root / ".env")
+        try:
+            return ContextBudget(
+                context_window_tokens=int(config.get("AGENT_CONTEXT_WINDOW_TOKENS") or 64_000),
+                reserve_output_tokens=int(config.get("AGENT_CONTEXT_RESERVE_TOKENS") or 8_000),
+                keep_recent_tokens=int(config.get("AGENT_CONTEXT_KEEP_RECENT_TOKENS") or 12_000),
+                compact_at_ratio=float(config.get("AGENT_CONTEXT_COMPACT_AT_RATIO") or 0.8),
+                max_tool_output_characters=int(
+                    config.get("AGENT_CONTEXT_MAX_TOOL_OUTPUT_CHARACTERS") or 12_000
+                ),
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Agent context configuration is invalid: {error}") from error
 
     def _node_commands(self, workspace: Path) -> dict[str, tuple[str, ...]]:
         node = shutil.which("node")

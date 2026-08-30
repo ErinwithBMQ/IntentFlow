@@ -65,8 +65,8 @@ import {
   type CanvasNoteLabel,
   type ChangeSummary,
   type ApprovalDecision,
+  type ApprovalMode,
   type ConversationMessage,
-  type ConversationMode,
   type FileChange,
   type FileDiff,
   type IntentBrief,
@@ -150,7 +150,7 @@ export function App() {
   const [sessionMessages, setSessionMessages] = useState<ConversationMessage[]>([]);
   const [sessionRuns, setSessionRuns] = useState<RunSnapshot[]>([]);
   const [messageDraft, setMessageDraft] = useState("");
-  const [conversationMode, setConversationMode] = useState<ConversationMode>("agent");
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>("ask");
   const [attachCanvas, setAttachCanvas] = useState(false);
   const [messageSending, setMessageSending] = useState(false);
   const [sessionDeleting, setSessionDeleting] = useState(false);
@@ -189,6 +189,7 @@ export function App() {
           if (!active) return;
           setSessions(availableSessions);
           setActiveSessionId(selectedSession.id);
+          setApprovalMode(selectedSession.approval_mode);
           localStorage.setItem(ACTIVE_SESSION_KEY, selectedSession.id);
 
           const detail = await getSession(selectedSession.id);
@@ -458,6 +459,7 @@ export function App() {
     localStorage.setItem(ACTIVE_SESSION_KEY, sessionId);
     try {
       const detail = await getSession(sessionId);
+      setApprovalMode(detail.session.approval_mode);
       setSessionMessages(detail.messages);
       setSessionRuns(detail.runs);
       const latestRun = detail.runs.at(-1);
@@ -520,17 +522,13 @@ export function App() {
 
   async function handleSendMessage() {
     if (!activeSessionId || !messageDraft.trim()) return;
-    if (conversationMode === "agent" && pendingReviewRun) {
-      setMessageError(agentBlockReason);
-      return;
-    }
     const content = messageDraft.trim();
     const optimisticMessageId = `pending-${Date.now()}`;
     const optimisticMessage: ConversationMessage = {
       id: optimisticMessageId,
       session_id: activeSessionId,
       role: "user",
-      mode: conversationMode,
+      mode: "agent",
       content,
       canvas_snapshot_id: attachCanvas ? "pending" : null,
       run_id: null,
@@ -546,7 +544,7 @@ export function App() {
       const response = await sendSessionMessage(
         activeSessionId,
         content,
-        conversationMode,
+        approvalMode,
         attachCanvas ? toIntentCanvas(nodes, edges, supplementalText) : null,
       );
       setSessionMessages((current) => [
@@ -1048,21 +1046,20 @@ export function App() {
                 runs={sessionRuns}
                 selectedRunId={run?.id ?? null}
                 selectedRunDetail={selectedRunDetail}
-                respondingMode={messageSending ? conversationMode : null}
+                responding={messageSending}
                 onSelectRun={(selectedRun) => void selectSessionRun(selectedRun)}
               />
               {run && !run.session_id && selectedRunDetail}
             </div>
             <ConversationComposer
               value={messageDraft}
-              mode={conversationMode}
+              approvalMode={approvalMode}
               attachCanvas={attachCanvas}
               sending={messageSending}
-              agentBlocked={pendingReviewRun !== null}
-              agentBlockReason={agentBlockReason}
+              pendingReviewNotice={agentBlockReason}
               error={messageError}
               onChange={setMessageDraft}
-              onModeChange={setConversationMode}
+              onApprovalModeChange={setApprovalMode}
               onAttachCanvasChange={setAttachCanvas}
               onSubmit={() => void handleSendMessage()}
             />
@@ -1091,7 +1088,7 @@ export function App() {
         </span>
         <span className="statusbar-divider" />
         <span>审查：{reviewStatusText}</span>
-        <span className="statusbar-spacer" /><span>v0.6.0 · conversation sessions</span>
+        <span className="statusbar-spacer" /><span>v0.7.0 · unified Agent context</span>
       </footer>
     </main>
   );

@@ -1,0 +1,78 @@
+{
+  "version": "2026-08-30",
+  "project": "examples/todo-demo",
+  "tasks": [
+    {
+      "id": "single-file-edit",
+      "category": "real-model",
+      "prompt": "把新增任务为空时的提示改得更明确，并保持测试通过。",
+      "success": ["completed", "verification_evidence", "one_changed_file"]
+    },
+    {
+      "id": "search-before-edit",
+      "category": "real-model",
+      "prompt": "先搜索删除任务的实现位置，再给删除按钮增加确认提示并验证。",
+      "success": ["search_code_called", "completed", "verification_evidence"]
+    },
+    {
+      "id": "create-file",
+      "category": "real-model",
+      "prompt": "新增 src/constants.js 保存任务标题最大长度，并在现有逻辑中使用它。",
+      "success": ["file_created", "completed", "verification_evidence"]
+    },
+    {
+      "id": "delete-file",
+      "category": "fixture",
+      "prompt": "删除 fixture 中明确标记为废弃的文件并验证。",
+      "success": ["file_deleted", "verification_evidence"]
+    },
+    {
+      "id": "multi-edit",
+      "category": "real-model",
+      "prompt": "在同一文件的两个位置完成任务计数展示，并保持测试通过。",
+      "success": ["multi_edit_patch", "completed", "verification_evidence"]
+    },
+    {
+      "id": "patch-conflict-recovery",
+      "category": "fixture",
+      "prompt": "从一次精确文本匹配失败中恢复，重新读取后完成修改。",
+      "success": ["conflict_observed", "later_patch_succeeded"]
+    },
+    {
+      "id": "verification-recovery",
+      "category": "fixture",
+      "prompt": "根据一次失败测试的关键信息修复实现并重新验证。",
+      "success": ["verification_failed", "later_verification_succeeded"]
+    },
+    {
+      "id": "stale-evidence",
+      "category": "automated",
+      "prompt": "测试通过后再次修改文件，旧证据必须立即失效。",
+      "success": ["old_evidence_invalidated"]
+    },
+    {
+      "id": "long-tool-output",
+      "category": "automated",
+      "prompt": "处理超长文件与测试日志，同时保留关键失败位置。",
+      "success": ["bounded_input", "key_failure_retained"]
+    },
+    {
+      "id": "context-compaction",
+      "category": "automated",
+      "prompt": "长对话触发摘要后继续调用工具并提交验证结果。",
+      "success": ["compression_count_positive", "completed"]
+    },
+    {
+      "id": "approval-rejection",
+      "category": "automated",
+      "prompt": "用户拒绝补丁后不得写文件，并把结构化拒绝结果返回模型。",
+      "success": ["user_rejected", "workspace_unchanged"]
+    },
+    {
+      "id": "restart-checkpoint",
+      "category": "automated",
+      "prompt": "服务重启后停止旧 Run，并恢复其 checkpoint、指标和审计历史。",
+      "success": ["run_stopped", "checkpoint_restored", "history_restored"]
+    }
+  ]
+}

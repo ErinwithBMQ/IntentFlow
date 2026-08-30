@@ -56,6 +56,7 @@ export type RunStatus = "running" | "completed" | "failed" | "stopped";
 export type ReviewStatus = "pending" | "accepted" | "discarded";
 export type ApprovalDecision = "allow_once" | "allow_for_run" | "reject";
 export type ApprovalStatus = "approval_required" | "approved" | "rejected" | "cancelled";
+export type ApprovalMode = "ask" | "auto";
 
 export type ToolApproval = {
   id: string;
@@ -100,6 +101,47 @@ export type RequirementResult = {
   evidence: string[];
 };
 
+export type ContextCheckpoint = {
+  summary: string;
+  covered_history_items: number;
+  current_goal: string;
+  constraints: string[];
+  plan: string[];
+  modified_files: string[];
+  verification_results: string[];
+  approval_decisions: string[];
+  unresolved: string[];
+  compression_count: number;
+  discarded_content_types: string[];
+};
+
+export type ContextRoundMetrics = {
+  step: number;
+  estimated_input_tokens: number;
+  actual_input_tokens: number | null;
+  output_tokens: number | null;
+  compressed: boolean;
+  discarded_content_types: string[];
+  model_duration_ms: number;
+};
+
+export type RunMetrics = {
+  model_turns: number;
+  tool_calls: number;
+  estimated_input_tokens: number;
+  actual_input_tokens: number;
+  output_tokens: number;
+  compression_count: number;
+  discarded_content_types: string[];
+  duration_ms: number;
+  rounds: ContextRoundMetrics[];
+};
+
+export type AgentHistoryItem =
+  | { action: string; reason: string; related_requirement_ids: string[] }
+  | { call_id: string; tool_name: string; ok: boolean; summary: string; output: string }
+  | { content: string };
+
 export type RunSnapshot = {
   id: string;
   status: RunStatus;
@@ -112,6 +154,9 @@ export type RunSnapshot = {
   approvals: ToolApproval[];
   events: RunEvent[];
   report: RunReport | null;
+  context_checkpoint: ContextCheckpoint | null;
+  metrics: RunMetrics;
+  history: AgentHistoryItem[];
 };
 
 export type ConversationMode = "ask" | "plan" | "agent";
@@ -120,6 +165,7 @@ export type SessionRecord = {
   id: string;
   project_id: string;
   title: string;
+  approval_mode: ApprovalMode;
   created_at: string;
   updated_at: string;
 };
@@ -243,12 +289,12 @@ export async function deleteSession(sessionId: string): Promise<void> {
 export function sendSessionMessage(
   sessionId: string,
   content: string,
-  mode: ConversationMode,
+  approvalMode: ApprovalMode,
   canvas: IntentCanvas | null,
 ): Promise<SendSessionMessageResponse> {
   return postJson<SendSessionMessageResponse>(`/api/sessions/${sessionId}/messages`, {
     content,
-    mode,
+    approval_mode: approvalMode,
     attach_canvas: canvas !== null,
     canvas,
   });

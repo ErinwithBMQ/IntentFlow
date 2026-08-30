@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { ConversationMessage } from "../../services/api";
+import { ConversationComposer } from "./ConversationComposer";
 import { MarkdownContent } from "./MarkdownContent";
 import { SessionConversation } from "./SessionConversation";
 
@@ -33,18 +34,41 @@ describe("SessionConversation", () => {
     expect(html).not.toContain("<script>");
   });
 
-  it("shows a mode-specific response indicator", () => {
+  it("shows a unified Agent response indicator", () => {
     const html = renderToStaticMarkup(
       <SessionConversation
         messages={[assistantMessage("上一条回复")]}
         runs={[]}
         selectedRunId={null}
         selectedRunDetail={null}
-        respondingMode="plan"
+        responding
         onSelectRun={() => undefined}
       />,
     );
 
-    expect(html).toContain("正在阅读项目并整理计划…");
+    expect(html).toContain("正在读取会话并判断下一步…");
+    expect(html).not.toContain("Ask");
+  });
+
+  it("uses one Agent input with an independent approval selector", () => {
+    const html = renderToStaticMarkup(
+      <ConversationComposer
+        value="解释上一轮结果"
+        approvalMode="ask"
+        attachCanvas={false}
+        sending={false}
+        pendingReviewNotice="上一轮修改待审查，你仍可继续提问"
+        error=""
+        onChange={() => undefined}
+        onApprovalModeChange={() => undefined}
+        onAttachCanvasChange={() => undefined}
+        onSubmit={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Agent 权限");
+    expect(html).toContain("请求批准");
+    expect(html).toContain("上一轮修改待审查，你仍可继续提问");
+    expect(html).not.toContain(">Plan<");
   });
 });

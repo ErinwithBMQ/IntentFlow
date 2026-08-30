@@ -14,6 +14,7 @@ from app.intent.models import IntentCanvas
 from app.runs import RunSnapshot
 
 ConversationMode = Literal["ask", "plan", "agent"]
+ApprovalMode = Literal["ask", "auto"]
 MessageRole = Literal["user", "assistant"]
 
 
@@ -27,6 +28,7 @@ class SessionRecord(BaseModel):
     id: str
     project_id: str
     title: str
+    approval_mode: ApprovalMode = "ask"
     created_at: str
     updated_at: str
 
@@ -84,23 +86,40 @@ class SessionStore:
             id=f"session-{uuid4().hex[:12]}",
             project_id=project_id,
             title=title.strip() or "新对话",
+            approval_mode="ask",
             created_at=now,
             updated_at=now,
         )
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO sessions (id, project_id, title, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO sessions (
+                  id, project_id, title, approval_mode, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.id,
                     session.project_id,
                     session.title,
+                    session.approval_mode,
                     session.created_at,
                     session.updated_at,
                 ),
             )
+        return session
+
+    def set_approval_mode(self, session_id: str, approval_mode: ApprovalMode) -> SessionRecord:
+        now = _now()
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE sessions SET approval_mode = ?, updated_at = ? WHERE id = ?",
+                (approval_mode, now, session_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(session_id)
+        session = self.get_session(session_id)
+        if session is None:
+            raise KeyError(session_id)
         return session
 
     def list_sessions(self, project_id: str | None = None) -> list[SessionRecord]:
@@ -291,6 +310,47 @@ class SessionStore:
             ).fetchall()
         return [RunSnapshot.model_validate_json(row["snapshot_json"]) for row in rows]
 
+    def build_run_context(
+        self,
+        session_id: str,
+        *,
+        before_sequence: int | None = None,
+        max_characters: int = 12_000,
+    ) -> str:
+        detail = self.get_detail(session_id)
+        if detail is None:
+            return ""
+
+        messages = [
+            message
+            for message in detail.messages
+            if before_sequence is None or message.sequence < before_sequence
+        ]
+        message_lines = [
+            f"- {message.role}/{message.mode}: {' '.join(message.content.split())[:500]}"
+            for message in messages[-12:]
+        ]
+        if len(messages) > 12:
+            message_lines.insert(0, f"- {len(messages) - 12} earlier messages compacted")
+
+        reviewed_runs = [run for run in detail.runs if run.review_status != "pending"][-6:]
+        run_lines: list[str] = []
+        for run in reviewed_runs:
+            review = "applied to project" if run.review_status == "accepted" else "discarded"
+            summary = run.report.summary if run.report else "No final report"
+            files = run.context_checkpoint.modified_files if run.context_checkpoint else []
+            evidence = run.context_checkpoint.verification_results if run.context_checkpoint else []
+            run_lines.append(
+                f"- {run.id}: {review}; {summary}; files={files}; verification={evidence}"
+            )
+
+        sections: list[str] = []
+        if message_lines:
+            sections.append("Recent session conversation:\n" + "\n".join(message_lines))
+        if run_lines:
+            sections.append("Reviewed Agent runs:\n" + "\n".join(run_lines))
+        return "\n\n".join(sections)[-max_characters:]
+
     def _initialize(self) -> None:
         with self._lock, self._connect() as connection:
             connection.executescript(
@@ -304,6 +364,7 @@ class SessionStore:
                   id TEXT PRIMARY KEY,
                   project_id TEXT NOT NULL REFERENCES projects(id),
                   title TEXT NOT NULL,
+                  approval_mode TEXT NOT NULL DEFAULT 'ask',
                   created_at TEXT NOT NULL,
                   updated_at TEXT NOT NULL
                 );
@@ -336,6 +397,13 @@ class SessionStore:
                 );
                 """
             )
+            session_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(sessions)")
+            }
+            if "approval_mode" not in session_columns:
+                connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN approval_mode TEXT NOT NULL DEFAULT 'ask'"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
@@ -349,6 +417,7 @@ def _session_from_row(row: sqlite3.Row) -> SessionRecord:
         id=row["id"],
         project_id=row["project_id"],
         title=row["title"],
+        approval_mode=row["approval_mode"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

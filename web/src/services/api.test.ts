@@ -211,6 +211,7 @@ describe("getHealth", () => {
       id: "session-1",
       project_id: "todo-demo",
       title: "新对话",
+      approval_mode: "ask" as const,
       created_at: "2026-08-29T00:00:00Z",
       updated_at: "2026-08-29T00:00:00Z",
     };
@@ -254,7 +255,7 @@ describe("getHealth", () => {
     await listSessions();
     await createSession();
     await getSession(session.id);
-    await sendSessionMessage(session.id, "增加筛选功能", "agent", null);
+    await sendSessionMessage(session.id, "增加筛选功能", "auto", null);
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
@@ -268,7 +269,7 @@ describe("getHealth", () => {
         method: "POST",
         body: JSON.stringify({
           content: "增加筛选功能",
-          mode: "agent",
+          approval_mode: "auto",
           attach_canvas: false,
           canvas: null,
         }),

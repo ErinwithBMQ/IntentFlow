@@ -44,11 +44,9 @@ class ConversationResponder:
         messages: list[ConversationMessage],
         canvas: IntentCanvas | None,
         project_context: str,
+        session_context: str = "",
     ) -> str:
-        input_messages: list[dict[str, str]] = [
-            {"role": message.role, "content": message.content}
-            for message in messages
-        ]
+        input_messages = build_conversation_window(messages)
         if canvas is not None:
             input_messages[-1]["content"] += (
                 "\n\nThe user attached this Intent Canvas snapshot:\n"
@@ -57,6 +55,8 @@ class ConversationResponder:
         input_messages[-1]["content"] += (
             "\n\nRead-only snapshot of the current project:\n" + project_context
         )
+        if session_context:
+            input_messages[-1]["content"] += "\n\n" + session_context
         try:
             response = await self.client.responses.create(
                 model=self.model,
@@ -70,6 +70,46 @@ class ConversationResponder:
         if not output_text:
             raise ConversationResponseError("模型没有返回可显示的回复")
         return output_text
+
+
+def build_conversation_window(
+    messages: list[ConversationMessage],
+    *,
+    max_messages: int = 12,
+    max_characters: int = 12_000,
+) -> list[dict[str, str]]:
+    recent = messages[-max_messages:]
+    result: list[dict[str, str]] = []
+    if len(messages) > len(recent):
+        earlier = messages[: -len(recent)] if recent else messages
+        summary_lines = [
+            f"- {message.role}/{message.mode}: {' '.join(message.content.split())[:240]}"
+            for message in earlier
+        ]
+        summary = "[Earlier conversation compacted]\n" + "\n".join(summary_lines)
+        result.append({"role": "user", "content": summary[-max_characters // 3 :]})
+    result.extend({"role": message.role, "content": message.content} for message in recent)
+
+    total = sum(len(item["content"]) for item in result)
+    while len(result) > 1 and total > max_characters:
+        removed = result.pop(0)
+        total -= len(removed["content"])
+    if result and len(result[0]["content"]) > max_characters:
+        result[0]["content"] = result[0]["content"][-max_characters:]
+    return result
+
+
+def build_conversation_history_text(
+    messages: list[ConversationMessage],
+    *,
+    max_characters: int = 12_000,
+) -> str:
+    view = build_conversation_window(
+        messages,
+        max_messages=12,
+        max_characters=max_characters,
+    )
+    return "\n".join(f"{item['role']}: {item['content']}" for item in view)
 
 
 def build_project_context(project_root: Path) -> str:
@@ -128,5 +168,7 @@ ASK_INSTRUCTIONS = """You are the read-only conversation assistant inside Intent
 Answer the user's question or help clarify their coding request in concise Chinese when they write
 in Chinese. You may inspect and discuss the supplied read-only project snapshot, conversation, and
 optional Canvas snapshot. You cannot change files or run commands, and must not claim that you did.
+Treat structured Session and Run fields as authoritative facts. In particular, do not infer
+approval or final review outcomes from conversational wording when a persisted status is present.
 Do not emit hidden chain-of-thought.
 """
