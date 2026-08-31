@@ -89,6 +89,9 @@ PREVIEW_FILE_SUFFIXES = frozenset(
         ".woff2",
     }
 )
+PREVIEW_MEDIA_TYPES = {
+    ".mjs": "text/javascript",
+}
 database_path = repository_root / "runtime-data" / "intentflow.db"
 session_store = SessionStore(database_path)
 project_registry = ProjectRegistry(database_path, repository_root)
@@ -735,7 +738,9 @@ async def get_run_preview_file(run_id: str, asset_path: str = "") -> Response:
         raise HTTPException(status_code=400, detail="预览文件路径越过允许目录") from error
     if not target.is_file() or target.suffix.casefold() not in PREVIEW_FILE_SUFFIXES:
         raise HTTPException(status_code=404, detail="预览文件不存在")
-    media_type, _ = mimetypes.guess_type(target.name)
+    media_type = PREVIEW_MEDIA_TYPES.get(target.suffix.casefold())
+    if media_type is None:
+        media_type, _ = mimetypes.guess_type(target.name)
     if target.suffix.casefold() in {".html", ".htm"}:
         prefix = f"/api/runs/{run_id}/preview-files/"
         try:

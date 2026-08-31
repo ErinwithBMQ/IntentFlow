@@ -29,7 +29,7 @@ ContextSink = Callable[
     [ContextCheckpoint, RunMetrics, list[AgentHistoryItem]],
     Awaitable[None],
 ]
-DEFAULT_MAX_STEPS = 12
+DEFAULT_MAX_STEPS = 20
 DEFAULT_MODEL_RETRIES = 2
 ApprovalOutcome = Literal["approved", "rejected", "cancelled"]
 

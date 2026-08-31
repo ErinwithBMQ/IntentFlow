@@ -84,12 +84,15 @@ async def test_run_preview_prefers_built_dist_files(tmp_path, monkeypatch) -> No
     preview_root = record.workspace / "dist"
     preview_root.mkdir()
     (preview_root / "index.html").write_text(
-        '<script src="/assets/app.js"></script>',
+        '<script type="module" src="/assets/app.mjs"></script>',
         encoding="utf-8",
     )
     assets = preview_root / "assets"
     assets.mkdir()
-    (assets / "app.js").write_text("document.body.dataset.ready = 'yes';", encoding="utf-8")
+    (assets / "app.mjs").write_text(
+        "document.body.dataset.ready = 'yes';",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(main_module, "repository_root", tmp_path)
     monkeypatch.setattr(main_module, "run_manager", manager)
     monkeypatch.setattr(main_module, "project_registry", registry)
@@ -98,15 +101,16 @@ async def test_run_preview_prefers_built_dist_files(tmp_path, monkeypatch) -> No
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         preview = await client.get("/api/runs/run-1/preview")
         index = await client.get("/api/runs/run-1/preview-files/")
-        asset = await client.get("/api/runs/run-1/preview-files/assets/app.js")
+        asset = await client.get("/api/runs/run-1/preview-files/assets/app.mjs")
         escaped = await client.get("/api/runs/run-1/preview-files/../source.js")
 
     assert preview.json() == {
         "available": True,
         "url": "/api/runs/run-1/preview-files/",
     }
-    assert '/api/runs/run-1/preview-files/assets/app.js' in index.text
+    assert '/api/runs/run-1/preview-files/assets/app.mjs' in index.text
     assert asset.text == "document.body.dataset.ready = 'yes';"
+    assert asset.headers["content-type"].startswith("text/javascript")
     assert escaped.status_code == 404
 
 

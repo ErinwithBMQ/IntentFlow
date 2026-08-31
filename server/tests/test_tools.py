@@ -1,7 +1,36 @@
 import sys
 
+import pytest
+
 from app.agent.models import ToolCall
-from app.agent.tools import ToolContext, ToolRegistry
+from app.agent.tools import (
+    ToolContext,
+    ToolRegistry,
+    _resolve_windows_command_executable,
+)
+
+
+def test_windows_command_resolves_bare_npm_to_cmd(monkeypatch) -> None:
+    npm_cmd = r"F:\NVM\nodejs\npm.cmd"
+    monkeypatch.setattr(
+        "app.agent.tools.shutil.which",
+        lambda executable: npm_cmd if executable == "npm.cmd" else None,
+    )
+
+    resolved = _resolve_windows_command_executable(("npm", "run", "build"))
+
+    assert resolved == (npm_cmd, "run", "build")
+
+
+def test_windows_command_keeps_non_npm_executable(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.agent.tools.shutil.which",
+        lambda executable: pytest.fail(f"unexpected lookup: {executable}"),
+    )
+
+    resolved = _resolve_windows_command_executable((sys.executable, "-m", "pytest"))
+
+    assert resolved == (sys.executable, "-m", "pytest")
 
 
 async def test_apply_patch_requires_one_exact_match(tmp_path) -> None:

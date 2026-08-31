@@ -2,6 +2,7 @@ import asyncio
 import difflib
 import os
 import re
+import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -448,9 +449,10 @@ class RunCommandTool(BaseTool):
         if command is None:
             return _failed_execution(call, f"Command is not configured: {arguments.command}")
 
+        executable_command = _resolve_command_executable(command)
         try:
             process = await asyncio.create_subprocess_exec(
-                *command,
+                *executable_command,
                 cwd=context.workspace_root,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
@@ -531,6 +533,22 @@ class RunCommandTool(BaseTool):
         stop_task.cancel()
         await asyncio.gather(stop_task, return_exceptions=True)
         return output, stopped, timed_out
+
+
+def _resolve_command_executable(command: tuple[str, ...]) -> tuple[str, ...]:
+    if os.name != "nt":
+        return command
+    return _resolve_windows_command_executable(command)
+
+
+def _resolve_windows_command_executable(command: tuple[str, ...]) -> tuple[str, ...]:
+    if not command or command[0].casefold() != "npm":
+        return command
+
+    resolved = shutil.which("npm.cmd") or shutil.which("npm")
+    if resolved is None:
+        return command
+    return (resolved, *command[1:])
 
 
 class ReportResultArguments(BaseModel):
