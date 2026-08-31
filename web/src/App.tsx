@@ -44,24 +44,21 @@ import {
   type WorkspaceTab,
 } from "./features/workspace/workspaceState";
 import {
-  acceptRun,
   activateProject,
   cancelSessionActivity,
   createProject,
   createSession,
   deleteSession,
-  discardRun,
   getHealth,
   getProject,
   getProjectFile,
   getProjectTree,
   getRun,
   getRunChanges,
-  getRunFile,
   getRunFileDiff,
   getRunPreview,
-  getRunTree,
   getSession,
+  keepRun,
   listProjects,
   listSessions,
   pickParentDirectory,
@@ -71,6 +68,7 @@ import {
   sendSessionMessage,
   subscribeToRun,
   updateProject,
+  undoRun,
   type CanvasNoteLabel,
   type ChangeSummary,
   type ApprovalDecision,
@@ -84,7 +82,6 @@ import {
   type RunPreviewResponse,
   type RunSnapshot,
   type SessionRecord,
-  type WorkspaceScope,
   type WorkspaceTree,
 } from "./services/api";
 
@@ -141,7 +138,7 @@ export function App() {
   const [run, setRun] = useState<RunSnapshot | null>(null);
   const [runBrief, setRunBrief] = useState<IntentBrief | null>(null);
   const [runError, setRunError] = useState("");
-  const [reviewAction, setReviewAction] = useState<"accept" | "discard" | null>(null);
+  const [reviewAction, setReviewAction] = useState<"keep" | "undo" | null>(null);
   const [toolApprovalAction, setToolApprovalAction] = useState<{
     approvalId: string;
     decision: ApprovalDecision;
@@ -149,7 +146,6 @@ export function App() {
   const [reviewError, setReviewError] = useState("");
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("canvas");
   const [projectTree, setProjectTree] = useState<WorkspaceTree | null>(null);
-  const [runTree, setRunTree] = useState<WorkspaceTree | null>(null);
   const [workspaceError, setWorkspaceError] = useState("");
   const [openFiles, setOpenFiles] = useState<OpenWorkspaceFile[]>([]);
   const [activeFileKey, setActiveFileKey] = useState<string | null>(null);
@@ -157,6 +153,7 @@ export function App() {
   const [activeDiffPath, setActiveDiffPath] = useState<string | null>(null);
   const [activeDiff, setActiveDiff] = useState<FileDiff | null>(null);
   const [runPreview, setRunPreview] = useState<RunPreviewResponse | null>(null);
+  const [previewRevision, setPreviewRevision] = useState(0);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState("");
   const [conversationWidth, setConversationWidth] = useState(loadConversationWidth);
@@ -173,6 +170,7 @@ export function App() {
   const [sessionDeleting, setSessionDeleting] = useState(false);
   const [messageError, setMessageError] = useState("");
   const closeRunStream = useRef<(() => void) | null>(null);
+  const openFilesRef = useRef<OpenWorkspaceFile[]>([]);
   const diffRequestSequence = useRef(0);
   const workspaceTabRef = useRef<WorkspaceTab>("canvas");
   const activeDiffPathRef = useRef<string | null>(null);
@@ -262,6 +260,10 @@ export function App() {
     activeDiffPathRef.current = activeDiffPath;
   }, [activeDiffPath, workspaceTab]);
 
+  useEffect(() => {
+    openFilesRef.current = openFiles;
+  }, [openFiles]);
+
   const updateNote = useCallback(
     (id: string, text: string, label: CanvasNoteLabel | null) => {
       setNodes((currentNodes) =>
@@ -319,7 +321,6 @@ export function App() {
   function clearRunReview() {
     diffRequestSequence.current += 1;
     activeDiffPathRef.current = null;
-    setRunTree(null);
     setChanges(null);
     setActiveDiffPath(null);
     setActiveDiff(null);
@@ -328,10 +329,6 @@ export function App() {
     setDiffLoading(false);
     setReviewAction(null);
     setReviewError("");
-    setOpenFiles((currentFiles) => currentFiles.filter((file) => file.scope === "project"));
-    if (activeFileKey?.startsWith("run:")) {
-      setActiveFileKey(openFiles.find((file) => file.scope === "project")?.key ?? null);
-    }
   }
 
   async function loadProjectIntoView(selectedProject: ProjectResponse) {
@@ -485,10 +482,13 @@ export function App() {
 
   async function loadRunFacts(snapshot: RunSnapshot) {
     setWorkspaceError("");
-    try {
-      setRunTree(await getRunTree(snapshot.id));
-    } catch (error) {
-      setWorkspaceError(errorMessage(error, "无法读取 Agent 修改版本"));
+    if (project) {
+      try {
+        setProjectTree(await getProjectTree(project.id));
+        await refreshOpenProjectFiles();
+      } catch (error) {
+        setWorkspaceError(errorMessage(error, "无法刷新项目文件"));
+      }
     }
     if (snapshot.status === "running") return;
     try {
@@ -540,6 +540,13 @@ export function App() {
         );
         if (event.kind === "approval_required") {
           void refreshRun(snapshot.id);
+        }
+        if (
+          event.kind === "tool_finished"
+          && event.tool_name === "apply_patch"
+          && event.status === "succeeded"
+        ) {
+          void refreshProjectWorkspace();
         }
       },
       () => void refreshRun(snapshot.id),
@@ -599,10 +606,10 @@ export function App() {
     }
     const activeSession = sessions.find((session) => session.id === activeSessionId);
     const reviewWarning = sessionRuns.some((sessionRun) => sessionRun.review_status === "pending")
-      ? " 未应用的修改也会一并放弃。"
+      ? " 待审查修改会先撤销。"
       : "";
     const confirmed = window.confirm(
-      `删除对话“${activeSession?.title ?? "当前对话"}”吗？${reviewWarning}此操作会删除消息、Canvas 快照、运行历史和隔离副本，但不会修改项目当前版本。`,
+      `删除对话“${activeSession?.title ?? "当前对话"}”吗？${reviewWarning}此操作会删除消息、Canvas 快照、运行历史和 Checkpoint。`,
     );
     if (!confirmed) return;
 
@@ -725,7 +732,7 @@ export function App() {
     }
   }
 
-  async function handleAccept() {
+  async function handleKeep() {
     if (!run || run.status === "running" || run.review_status !== "pending" || !changes) {
       return;
     }
@@ -736,44 +743,43 @@ export function App() {
         ? "本次修改没有自动化验证结果，请先检查 Diff。\n\n"
         : "";
     const confirmed = window.confirm(
-      `${riskNotice}仍要将 ${changes.changed_files} 个文件变更写入项目当前版本吗？`,
+      `${riskNotice}当前项目已有 ${changes.changed_files} 个文件变更，确认保留本轮修改吗？`,
     );
     if (!confirmed) return;
 
-    setReviewAction("accept");
+    setReviewAction("keep");
     setReviewError("");
     try {
-      const updated = await acceptRun(run.id);
+      const updated = await keepRun(run.id);
       setRun(updated);
       setSessionRuns((currentRuns) => currentRuns.map(
         (item) => item.id === updated.id ? updated : item,
       ));
-      if (project) setProjectTree(await getProjectTree(project.id));
-      await refreshOpenProjectFiles();
     } catch (error) {
-      setReviewError(errorMessage(error, "接受修改失败"));
+      setReviewError(errorMessage(error, "保留修改失败"));
     } finally {
       setReviewAction(null);
     }
   }
 
-  async function handleDiscard() {
+  async function handleUndo() {
     if (!run || run.status === "running" || run.review_status !== "pending") return;
     const confirmed = window.confirm(
-      "放弃本次修改吗？项目当前版本不会变化，Agent 修改版本和 Diff 会保留。",
+      "撤销本轮修改吗？系统会根据 Checkpoint 恢复本轮触碰的文件，历史 Diff 会保留。",
     );
     if (!confirmed) return;
 
-    setReviewAction("discard");
+    setReviewAction("undo");
     setReviewError("");
     try {
-      const updated = await discardRun(run.id);
+      const updated = await undoRun(run.id);
       setRun(updated);
       setSessionRuns((currentRuns) => currentRuns.map(
         (item) => item.id === updated.id ? updated : item,
       ));
+      await refreshProjectWorkspace();
     } catch (error) {
-      setReviewError(errorMessage(error, "放弃修改失败"));
+      setReviewError(errorMessage(error, "撤销本轮失败"));
     } finally {
       setReviewAction(null);
     }
@@ -781,8 +787,7 @@ export function App() {
 
   async function refreshOpenProjectFiles() {
     if (!project) return;
-    const projectFiles = openFiles.filter((file) => file.scope === "project");
-    const refreshedFiles = await Promise.all(projectFiles.map(async (openFile) => {
+    const refreshedFiles = await Promise.all(openFilesRef.current.map(async (openFile) => {
       try {
         const file = await getProjectFile(project.id, openFile.path);
         return { ...openFile, state: "ready" as const, file, error: "" };
@@ -801,14 +806,25 @@ export function App() {
     ));
   }
 
+  async function refreshProjectWorkspace() {
+    if (!project) return;
+    try {
+      setProjectTree(await getProjectTree(project.id));
+      await refreshOpenProjectFiles();
+      setPreviewRevision((current) => current + 1);
+    } catch (error) {
+      setWorkspaceError(errorMessage(error, "无法刷新项目文件"));
+    }
+  }
+
   function highlightSources(sourceIds: string[]) {
     setNodes((currentNodes) =>
       currentNodes.map((node) => ({ ...node, selected: sourceIds.includes(node.id) })),
     );
   }
 
-  async function openWorkspaceFile(scope: WorkspaceScope, path: string) {
-    const key = workspaceFileKey(scope, path);
+  async function openWorkspaceFile(path: string) {
+    const key = workspaceFileKey(path);
     setWorkspaceTab("code");
     setActiveFileKey(key);
     const existing = openFiles.find((file) => file.key === key);
@@ -816,7 +832,6 @@ export function App() {
 
     const loadingFile: OpenWorkspaceFile = {
       key,
-      scope,
       path,
       state: "loading",
       file: null,
@@ -830,14 +845,8 @@ export function App() {
     });
 
     try {
-      const file = scope === "project"
-        ? project
-          ? await getProjectFile(project.id, path)
-          : null
-        : run
-          ? await getRunFile(run.id, path)
-          : null;
-      if (!file) throw new Error("当前没有可读取的 Agent 修改版本");
+      const file = project ? await getProjectFile(project.id, path) : null;
+      if (!file) throw new Error("当前没有可读取的项目文件");
       setOpenFiles((currentFiles) => currentFiles.map((item) => (
         item.key === key ? { ...item, state: "ready", file, error: "" } : item
       )));
@@ -902,7 +911,7 @@ export function App() {
 
   async function openRelatedFile(path: string) {
     if (!run) {
-      await openWorkspaceFile("project", path);
+      await openWorkspaceFile(path);
       return;
     }
     let currentChanges = changes;
@@ -919,7 +928,7 @@ export function App() {
       if (change) await openRunDiff(run.id, change);
       return;
     }
-    await openWorkspaceFile("run", path);
+    await openWorkspaceFile(path);
   }
 
   const statusText = {
@@ -933,7 +942,7 @@ export function App() {
   const agentBlockReason = pendingReviewRun?.status === "running"
     ? "当前 Agent 运行结束并处理修改后才能开始下一轮"
     : pendingReviewRun
-      ? "请先应用或放弃上一轮 Agent 修改"
+      ? "请先保留或撤销上一轮 Agent 修改"
       : "";
   const runStatusText = run
     ? { running: "运行中", completed: "已完成", failed: "失败", stopped: "已停止" }[run.status]
@@ -944,13 +953,13 @@ export function App() {
     : workspaceTab === "diff"
       ? "本次运行 Diff"
       : activeOpenFile
-        ? `${activeOpenFile.scope === "project" ? "项目当前版本" : "Agent 修改版本"} / ${activeOpenFile.path}`
+        ? `项目文件 / ${activeOpenFile.path}`
         : "代码查看";
   const verifiedRequirements = run?.report?.requirement_results.filter(
     (result) => result.status === "verified",
   ).length ?? 0;
   const reviewStatusText = run
-    ? { pending: "待审查", accepted: "已应用", discarded: "已放弃" }[run.review_status]
+    ? { pending: "待审查", accepted: "已保留", discarded: "已撤销" }[run.review_status]
     : "待运行";
   const selectedRunDetail = run && runBrief ? (
     <SingleRunConversation
@@ -963,8 +972,8 @@ export function App() {
       reviewError={reviewError}
       onHighlightSources={highlightSources}
       onOpenRelatedFile={(path) => void openRelatedFile(path)}
-      onAccept={() => void handleAccept()}
-      onDiscard={() => void handleDiscard()}
+      onKeep={() => void handleKeep()}
+      onUndo={() => void handleUndo()}
       onResolveApproval={(approvalId, decision) => {
         void handleResolveApproval(approvalId, decision);
       }}
@@ -1022,11 +1031,9 @@ export function App() {
       >
         <ProjectExplorer
           projectTree={projectTree}
-          runTree={runTree}
-          runId={run?.id ?? null}
           activeFileKey={activeFileKey}
           error={workspaceError}
-          onOpenFile={(scope, path) => void openWorkspaceFile(scope, path)}
+          onOpenFile={(path) => void openWorkspaceFile(path)}
         />
 
         <section className="main-workspace">
@@ -1134,8 +1141,8 @@ export function App() {
               <div className="preview-workspace">
                 {runPreview?.available && runPreview.url ? (
                   <iframe
-                    key={runPreview.url}
-                    src={runPreview.url}
+                    key={`${runPreview.url}:${previewRevision}`}
+                    src={`${runPreview.url}?revision=${previewRevision}`}
                     title={`${project?.name ?? "项目"}构建预览`}
                     sandbox="allow-scripts"
                   />
@@ -1143,7 +1150,7 @@ export function App() {
                   <div className="workspace-empty">
                     <MonitorPlay size={28} />
                     <strong>暂无可预览的构建结果</strong>
-                    <p>Agent 成功生成 dist/index.html 后会在这里提供隔离预览。</p>
+                    <p>Agent 成功生成 dist/index.html 后会在这里提供项目预览。</p>
                   </div>
                 )}
               </div>

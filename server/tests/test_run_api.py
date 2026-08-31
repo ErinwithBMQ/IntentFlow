@@ -8,6 +8,7 @@ import app.main as main_module
 from app.agent.model_client import FakeModelClient
 from app.agent.models import IntentBrief, IntentRequirement, ModelTurn, ToolCall
 from app.runs import RunManager
+from app.workspaces import WorkspaceService
 
 
 def make_repository(root: Path) -> None:
@@ -423,6 +424,135 @@ async def test_run_can_start_with_automatic_approval_policy(tmp_path) -> None:
     assert (record.workspace / "source.txt").read_text(encoding="utf-8") == "approved"
 
 
+async def test_direct_run_keep_records_review_without_rewriting_project(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    make_repository(tmp_path)
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=modifying_model_factory,
+        command_factory=command_factory,
+        default_project_root=tmp_path / "examples" / "todo-demo",
+    )
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    snapshot = manager.start(
+        IntentBrief.model_validate(run_payload()["intent"]),
+        approval_mode="auto",
+    )
+    await wait_until_finished(manager, snapshot.id)
+    project_file = tmp_path / "examples" / "todo-demo" / "source.txt"
+    assert project_file.read_text(encoding="utf-8") == "approved"
+
+    transport = ASGITransport(app=main_module.app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        kept = await client.post(f"/api/runs/{snapshot.id}/keep")
+        changes = await client.get(f"/api/runs/{snapshot.id}/changes")
+
+    assert kept.status_code == 200
+    assert kept.json()["review_status"] == "accepted"
+    assert project_file.read_text(encoding="utf-8") == "approved"
+    assert changes.json()["changed_files"] == 1
+
+
+async def test_direct_run_undo_restores_project_and_preserves_diff(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    make_repository(tmp_path)
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=modifying_model_factory,
+        command_factory=command_factory,
+        default_project_root=tmp_path / "examples" / "todo-demo",
+    )
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    snapshot = manager.start(
+        IntentBrief.model_validate(run_payload()["intent"]),
+        approval_mode="auto",
+    )
+    await wait_until_finished(manager, snapshot.id)
+    project_file = tmp_path / "examples" / "todo-demo" / "source.txt"
+    assert project_file.read_text(encoding="utf-8") == "approved"
+
+    transport = ASGITransport(app=main_module.app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        undone = await client.post(f"/api/runs/{snapshot.id}/undo")
+        changes = await client.get(f"/api/runs/{snapshot.id}/changes")
+        diff = await client.get(
+            f"/api/runs/{snapshot.id}/diff",
+            params={"path": "source.txt"},
+        )
+
+    assert undone.status_code == 200
+    assert undone.json()["review_status"] == "discarded"
+    assert project_file.read_text(encoding="utf-8") == "original"
+    assert changes.json()["changed_files"] == 1
+    assert "-original" in diff.json()["diff"]
+    assert "+approved" in diff.json()["diff"]
+
+
+async def test_direct_run_undo_rejects_external_changes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    make_repository(tmp_path)
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=modifying_model_factory,
+        command_factory=command_factory,
+        default_project_root=tmp_path / "examples" / "todo-demo",
+    )
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    snapshot = manager.start(
+        IntentBrief.model_validate(run_payload()["intent"]),
+        approval_mode="auto",
+    )
+    await wait_until_finished(manager, snapshot.id)
+    project_file = tmp_path / "examples" / "todo-demo" / "source.txt"
+    project_file.write_text("external", encoding="utf-8")
+
+    transport = ASGITransport(app=main_module.app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(f"/api/runs/{snapshot.id}/undo")
+
+    assert response.status_code == 409
+    assert "source.txt" in response.json()["detail"]
+    assert project_file.read_text(encoding="utf-8") == "external"
+    assert manager.get(snapshot.id).review_status == "pending"
+
+
+async def test_direct_run_restores_checkpoint_after_manager_restart(tmp_path) -> None:
+    make_repository(tmp_path)
+    project_root = tmp_path / "examples" / "todo-demo"
+    first_manager = RunManager(
+        tmp_path,
+        model_client_factory=modifying_model_factory,
+        command_factory=command_factory,
+        default_project_root=project_root,
+    )
+    started = first_manager.start(
+        IntentBrief.model_validate(run_payload()["intent"]),
+        approval_mode="auto",
+    )
+    await wait_until_finished(first_manager, started.id)
+    persisted = first_manager.get(started.id).snapshot()
+
+    restored_manager = RunManager(tmp_path, default_project_root=project_root)
+    restored = restored_manager.restore(persisted)
+    restored_record = restored_manager.get(restored.id)
+
+    assert restored.workspace_mode == "direct"
+    assert restored_record is not None
+    assert restored_record.checkpoint is not None
+    assert restored_record.checkpoint.changes(WorkspaceService()).changed_files == 1
+
+    undone = restored_manager.discard(restored.id)
+
+    assert undone.review_status == "discarded"
+    assert (project_root / "source.txt").read_text(encoding="utf-8") == "original"
+
+
 async def test_rejected_patch_is_returned_to_model_without_changing_file(
     tmp_path,
     monkeypatch,
@@ -523,7 +653,7 @@ async def test_pending_approval_times_out_without_applying_patch(tmp_path) -> No
     assert (record.workspace / "source.txt").read_text(encoding="utf-8") == "original"
 
 
-async def test_run_api_copies_demo_and_streams_events(tmp_path, monkeypatch) -> None:
+async def test_run_api_uses_direct_workspace_and_streams_events(tmp_path, monkeypatch) -> None:
     make_repository(tmp_path)
     manager = RunManager(
         tmp_path,
@@ -552,15 +682,16 @@ async def test_run_api_copies_demo_and_streams_events(tmp_path, monkeypatch) -> 
         created = await client.post("/api/runs", json=payload)
         assert created.status_code == 201
         run_id = created.json()["id"]
-        workspace = tmp_path / created.json()["workspace_relative_path"]
+        checkpoint_root = tmp_path / created.json()["workspace_relative_path"]
         record = manager.get(run_id)
         assert record is not None
-        assert record.baseline != record.workspace
+        assert created.json()["workspace_mode"] == "direct"
+        assert record.workspace == (tmp_path / "examples" / "todo-demo").resolve()
         assert record.baseline.relative_to(tmp_path).as_posix() == (
-            f"runtime-data/runs/{run_id}/baseline/workspace"
+            f"runtime-data/runs/{run_id}/checkpoint/before"
         )
-        assert (record.baseline / "source.txt").read_text(encoding="utf-8") == "original"
-        assert (workspace / "source.txt").read_text(encoding="utf-8") == "original"
+        assert (checkpoint_root / "manifest.json").is_file()
+        assert not (record.baseline / "source.txt").exists()
         assert (tmp_path / "examples" / "todo-demo" / "source.txt").read_text() == "original"
 
         await wait_until_finished(manager, run_id)
@@ -586,7 +717,7 @@ async def test_run_api_rejects_unknown_run() -> None:
     assert response.status_code == 404
 
 
-async def test_run_baseline_stays_frozen_when_the_project_changes(tmp_path) -> None:
+async def test_direct_run_reads_the_authorized_project_without_copying_it(tmp_path) -> None:
     make_repository(tmp_path)
     manager = RunManager(
         tmp_path,
@@ -596,13 +727,13 @@ async def test_run_baseline_stays_frozen_when_the_project_changes(tmp_path) -> N
     )
     snapshot = manager.start(
         IntentBrief(
-            title="固定 Diff 基准",
-            goal="确认运行后的项目变化不会影响本次基准",
+            title="直接工作区",
+            goal="确认运行直接读取已授权项目",
             requirements=[
                 IntentRequirement(
                     id="REQ-1",
-                    description="保留运行开始时的代码",
-                    acceptance_criteria=["基准内容保持不变"],
+                    description="读取项目当前内容",
+                    acceptance_criteria=["不复制完整项目"],
                     source_ids=["note-1"],
                 )
             ],
@@ -616,8 +747,8 @@ async def test_run_baseline_stays_frozen_when_the_project_changes(tmp_path) -> N
     await wait_until_finished(manager, snapshot.id)
 
     assert project_file.read_text(encoding="utf-8") == "changed later"
-    assert (record.baseline / "source.txt").read_text(encoding="utf-8") == "original"
-    assert (record.workspace / "source.txt").read_text(encoding="utf-8") == "original"
+    assert record.workspace == project_file.parent.resolve()
+    assert not (record.baseline / "source.txt").exists()
 
 
 async def test_run_api_allows_a_thirteenth_turn_for_the_final_report(

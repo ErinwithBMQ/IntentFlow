@@ -23,10 +23,12 @@ from app.agent.models import (
 )
 from app.agent.runner import DEFAULT_MAX_STEPS, AgentRunner
 from app.agent.tools import ToolContext, ToolRegistry
+from app.checkpoints import CheckpointConflictError, CheckpointError, RunCheckpoint
 from app.projects import ProjectRecord
 from app.workspaces import DEFAULT_IGNORED_NAMES, WorkspaceService
 
 ReviewStatus = Literal["pending", "accepted", "discarded"]
+WorkspaceMode = Literal["isolated", "direct"]
 
 
 class RunReviewError(RuntimeError):
@@ -38,6 +40,7 @@ class RunSnapshot(BaseModel):
     status: Literal["running", "completed", "failed", "stopped"]
     review_status: ReviewStatus
     workspace_relative_path: str
+    workspace_mode: WorkspaceMode = "isolated"
     project_id: str | None = None
     project_name: str | None = None
     project_ignored_names: list[str] = Field(default_factory=lambda: sorted(DEFAULT_IGNORED_NAMES))
@@ -73,11 +76,15 @@ class RunRecord:
         context_checkpoint: ContextCheckpoint | None = None,
         metrics: RunMetrics | None = None,
         history: list[AgentHistoryItem] | None = None,
+        workspace_mode: WorkspaceMode = "isolated",
+        checkpoint: RunCheckpoint | None = None,
     ) -> None:
         self.id = run_id
         self.workspace = workspace
         self.baseline = baseline
         self.relative_path = relative_path
+        self.workspace_mode = workspace_mode
+        self.checkpoint = checkpoint
         self.project_id = project_id
         self.project_name = project_name or workspace.name
         self.project_root = project_root.resolve() if project_root is not None else None
@@ -216,6 +223,7 @@ class RunRecord:
             status=self.status,
             review_status=self.review_status,
             workspace_relative_path=self.relative_path,
+            workspace_mode=self.workspace_mode,
             project_id=self.project_id,
             project_name=self.project_name,
             project_ignored_names=sorted(self.project_ignored_names),
@@ -285,18 +293,15 @@ class RunManager:
         context_budget.validate_limits()
         project_root, project_id, project_name, ignored_names = self._project_details(project)
         run_id = uuid4().hex[:12]
-        relative_path = f"runtime-data/runs/{run_id}/workspace"
-        workspace = self.repository_root / Path(relative_path)
-        run_root = workspace.parent
-        baseline = run_root / "baseline" / "workspace"
+        run_relative_path = f"runtime-data/runs/{run_id}"
+        run_root = self.repository_root / Path(run_relative_path)
+        relative_path = f"{run_relative_path}/checkpoint"
+        checkpoint_root = self.repository_root / Path(relative_path)
+        workspace = project_root
+        baseline = checkpoint_root / "before"
         run_root.mkdir(parents=True, exist_ok=False)
         try:
-            shutil.copytree(
-                project_root,
-                baseline,
-                ignore=self._copy_ignore(ignored_names),
-            )
-            shutil.copytree(baseline, workspace)
+            checkpoint = RunCheckpoint(checkpoint_root, project_root)
         except Exception:
             shutil.rmtree(run_root, ignore_errors=True)
             raise
@@ -315,6 +320,8 @@ class RunManager:
             intent=intent,
             snapshot_sink=self.snapshot_sink,
             approval_timeout_seconds=self.approval_timeout_seconds,
+            workspace_mode="direct",
+            checkpoint=checkpoint,
         )
         record.approval_mode = approval_mode
         self.records[run_id] = record
@@ -341,6 +348,7 @@ class RunManager:
             ),
             stop_event=record.stop_event,
             ignored_names=ignored_names,
+            mutation_writer=checkpoint.apply_text_change,
         )
         runner = AgentRunner(
             model_client,
@@ -357,14 +365,25 @@ class RunManager:
         return record.snapshot()
 
     def restore(self, snapshot: RunSnapshot) -> RunSnapshot:
-        workspace = self.repository_root / Path(snapshot.workspace_relative_path)
-        baseline = workspace.parent / "baseline" / workspace.name
         project = (
             self.project_resolver(snapshot.project_id)
             if snapshot.project_id and self.project_resolver is not None
             else None
         )
         project_root = Path(project.root_path) if project is not None else self.default_project_root
+        checkpoint = None
+        if snapshot.workspace_mode == "direct":
+            checkpoint_root = self.repository_root / Path(snapshot.workspace_relative_path)
+            if project_root is None:
+                workspace = checkpoint_root / "after"
+                baseline = checkpoint_root / "before"
+            else:
+                workspace = project_root
+                baseline = checkpoint_root / "before"
+                checkpoint = RunCheckpoint(checkpoint_root, project_root)
+        else:
+            workspace = self.repository_root / Path(snapshot.workspace_relative_path)
+            baseline = workspace.parent / "baseline" / workspace.name
         record = RunRecord(
             snapshot.id,
             workspace,
@@ -382,6 +401,8 @@ class RunManager:
             context_checkpoint=snapshot.context_checkpoint,
             metrics=snapshot.metrics,
             history=snapshot.history,
+            workspace_mode=snapshot.workspace_mode,
+            checkpoint=checkpoint,
         )
         record.status = snapshot.status
         record.review_status = snapshot.review_status
@@ -440,20 +461,31 @@ class RunManager:
         if record.review_status == "accepted":
             return record.snapshot()
         if record.review_status == "discarded":
-            raise RunReviewError("本次运行已放弃，不能再接受")
+            message = (
+                "本次运行已撤销，不能再保留"
+                if record.workspace_mode == "direct"
+                else "本次运行已放弃，不能再接受"
+            )
+            raise RunReviewError(message)
         if record.status == "running":
-            raise RunReviewError("运行结束后才能接受修改")
+            message = (
+                "运行结束后才能保留修改"
+                if record.workspace_mode == "direct"
+                else "运行结束后才能接受修改"
+            )
+            raise RunReviewError(message)
 
-        if record.project_root is None:
-            raise RunReviewError("运行记录缺少所属项目，无法接受修改")
-        project_workspace = self.workspace_service or WorkspaceService(
-            ignored_names=record.project_ignored_names
-        )
-        project_workspace.apply_changes(
-            record.baseline,
-            record.workspace,
-            record.project_root,
-        )
+        if record.workspace_mode == "isolated":
+            if record.project_root is None:
+                raise RunReviewError("运行记录缺少所属项目，无法接受修改")
+            project_workspace = self.workspace_service or WorkspaceService(
+                ignored_names=record.project_ignored_names
+            )
+            project_workspace.apply_changes(
+                record.baseline,
+                record.workspace,
+                record.project_root,
+            )
         record.review_status = "accepted"
         record.persist()
         return record.snapshot()
@@ -463,10 +495,32 @@ class RunManager:
         if record.review_status == "discarded":
             return record.snapshot()
         if record.review_status == "accepted":
-            raise RunReviewError("本次运行已接受，不能再放弃")
+            message = (
+                "本次运行已保留，不能再撤销"
+                if record.workspace_mode == "direct"
+                else "本次运行已接受，不能再放弃"
+            )
+            raise RunReviewError(message)
         if record.status == "running":
-            raise RunReviewError("运行结束后才能放弃修改")
+            message = (
+                "运行结束后才能撤销本轮"
+                if record.workspace_mode == "direct"
+                else "运行结束后才能放弃修改"
+            )
+            raise RunReviewError(message)
 
+        if record.workspace_mode == "direct":
+            if record.checkpoint is None:
+                raise RunReviewError("运行记录缺少 Checkpoint，无法撤销修改")
+            service = self.workspace_service or WorkspaceService(
+                ignored_names=record.project_ignored_names
+            )
+            try:
+                record.checkpoint.rollback(service)
+            except CheckpointConflictError:
+                raise
+            except CheckpointError as error:
+                raise RunReviewError(str(error)) from error
         record.review_status = "discarded"
         record.persist()
         return record.snapshot()

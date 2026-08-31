@@ -240,7 +240,7 @@ class ProjectRegistry:
         if not root.is_dir():
             raise ProjectRegistrationError("项目路径必须指向文件夹")
         if _is_within(self.runtime_root, root):
-            raise ProjectRegistrationError("不能把 IntentFlow 的运行副本登记为项目")
+            raise ProjectRegistrationError("不能把 IntentFlow 的运行数据目录登记为项目")
         if not os.access(root, os.R_OK | os.W_OK):
             raise ProjectRegistrationError("项目文件夹必须可读写")
         try:

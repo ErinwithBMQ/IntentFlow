@@ -161,6 +161,7 @@ export type RunSnapshot = {
   status: RunStatus;
   review_status: ReviewStatus;
   workspace_relative_path: string;
+  workspace_mode?: "isolated" | "direct";
   project_id: string | null;
   project_name: string | null;
   project_ignored_names: string[];
@@ -476,6 +477,14 @@ export function acceptRun(runId: string): Promise<RunSnapshot> {
 
 export function discardRun(runId: string): Promise<RunSnapshot> {
   return postJson<RunSnapshot>(`/api/runs/${runId}/discard`);
+}
+
+export function keepRun(runId: string): Promise<RunSnapshot> {
+  return postJson<RunSnapshot>(`/api/runs/${runId}/keep`);
+}
+
+export function undoRun(runId: string): Promise<RunSnapshot> {
+  return postJson<RunSnapshot>(`/api/runs/${runId}/undo`);
 }
 
 export function subscribeToRun(

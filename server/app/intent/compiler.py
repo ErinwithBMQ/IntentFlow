@@ -424,7 +424,7 @@ Choose exactly one tool:
   does not ask you to execute it yet.
 - Call respond_to_user for greetings, thanks, small talk, unclear fragments, or questions that
   do not clearly request project action. You may answer questions about the project or session
-  state, including whether a Run was applied or discarded. Briefly reply in the user's language.
+  state, including whether a Run was kept or undone. Briefly reply in the user's language.
   Do not claim to have changed project files or run commands.
 
 When submitting an IntentBrief, follow the same traceability rules as the intent compiler: preserve

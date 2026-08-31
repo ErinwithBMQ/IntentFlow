@@ -191,6 +191,38 @@ class WorkspaceService:
     def changes(self, baseline_root: Path, workspace_root: Path) -> ChangeSummary:
         baseline_files = self._collect_files(baseline_root)
         workspace_files = self._collect_files(workspace_root)
+        return self._changes_from_file_maps(baseline_files, workspace_files)
+
+    def changes_for_paths(
+        self,
+        baseline_root: Path,
+        workspace_root: Path,
+        relative_paths: list[str],
+    ) -> ChangeSummary:
+        baseline_files: dict[str, Path] = {}
+        workspace_files: dict[str, Path] = {}
+        for relative_path in relative_paths:
+            baseline_target, normalized_path = self._resolve_path(
+                baseline_root,
+                relative_path,
+                require_exists=False,
+            )
+            workspace_target, _ = self._resolve_path(
+                workspace_root,
+                relative_path,
+                require_exists=False,
+            )
+            if baseline_target.is_file():
+                baseline_files[normalized_path] = baseline_target
+            if workspace_target.is_file():
+                workspace_files[normalized_path] = workspace_target
+        return self._changes_from_file_maps(baseline_files, workspace_files)
+
+    def _changes_from_file_maps(
+        self,
+        baseline_files: dict[str, Path],
+        workspace_files: dict[str, Path],
+    ) -> ChangeSummary:
         changes: list[FileChange] = []
 
         for relative_path in sorted(set(baseline_files) | set(workspace_files)):

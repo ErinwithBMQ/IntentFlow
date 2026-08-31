@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.agent.models import IntentBrief
+from app.checkpoints import CheckpointConflictError
 from app.conversation_service import (
     ConversationResponder,
     ConversationResponseError,
@@ -290,9 +291,18 @@ async def delete_session(session_id: str) -> Response:
 
     try:
         for run in detail.runs:
+            record = run_manager.get(run.id)
+            if (
+                record is not None
+                and record.workspace_mode == "direct"
+                and record.review_status == "pending"
+            ):
+                run_manager.discard(run.id)
             run_manager.delete(run.id, run.workspace_relative_path)
+    except CheckpointConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except (OSError, RunReviewError) as error:
-        raise HTTPException(status_code=503, detail=f"删除运行副本失败：{error}") from error
+        raise HTTPException(status_code=503, detail=f"删除运行记录失败：{error}") from error
 
     session_store.delete_session(session_id)
     return Response(status_code=204)
@@ -427,7 +437,7 @@ async def _process_session_message(
             "上一轮 Agent 仍在运行。你可以继续询问进展，但需要等待它结束并处理修改后，"
             "才能开始新的执行。"
             if pending_run.status == "running"
-            else "上一轮 Agent 修改仍待审查。你可以继续询问结果，但需要先应用到项目或放弃修改，"
+            else "上一轮 Agent 修改仍待审查。你可以继续询问结果，但需要先保留修改或撤销本轮，"
             "才能开始新的执行。"
         )
         assistant_message = session_store.add_message(
@@ -460,8 +470,8 @@ async def _process_session_message(
         "assistant",
         "agent",
         (
-            f"收到，我来处理《{brief.title}》。我会在隔离工作区中修改并验证，"
-            "完成后你可以查看代码和 Diff，再决定是否应用到项目。"
+            f"收到，我来处理《{brief.title}》。我会在修改前按权限请求批准，并直接在当前项目中实现和验证。"
+            "完成后你可以查看代码和 Diff，再决定保留修改或撤销本轮。"
         ),
         run_id=run.id,
         intent=brief,
@@ -700,6 +710,8 @@ async def get_run_file(run_id: str, path: str) -> WorkspaceFile:
 async def get_run_changes(run_id: str) -> ChangeSummary:
     record = require_finished_run(run_id)
     try:
+        if record.workspace_mode == "direct" and record.checkpoint is not None:
+            return record.checkpoint.changes(run_workspace_service(record))
         return run_workspace_service(record).changes(record.baseline, record.workspace)
     except WorkspaceAccessError as error:
         raise workspace_http_error(error) from error
@@ -709,6 +721,8 @@ async def get_run_changes(run_id: str) -> ChangeSummary:
 async def get_run_file_diff(run_id: str, path: str) -> FileDiff:
     record = require_finished_run(run_id)
     try:
+        if record.workspace_mode == "direct" and record.checkpoint is not None:
+            return record.checkpoint.file_diff(run_workspace_service(record), path)
         return run_workspace_service(record).file_diff(record.baseline, record.workspace, path)
     except WorkspaceAccessError as error:
         raise workspace_http_error(error) from error
@@ -826,8 +840,18 @@ async def discard_run(run_id: str) -> RunSnapshot:
         return run_manager.discard(run_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="运行记录不存在") from error
-    except RunReviewError as error:
+    except (RunReviewError, CheckpointConflictError) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/runs/{run_id}/keep", response_model=RunSnapshot)
+async def keep_run(run_id: str) -> RunSnapshot:
+    return await accept_run(run_id)
+
+
+@app.post("/api/runs/{run_id}/undo", response_model=RunSnapshot)
+async def undo_run(run_id: str) -> RunSnapshot:
+    return await discard_run(run_id)
 
 
 def require_project(project_id: str | None = None) -> ProjectRecord:

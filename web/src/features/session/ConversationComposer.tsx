@@ -21,7 +21,7 @@ type ConversationComposerProps = {
 
 const approvalDescriptions: Record<ApprovalMode, string> = {
   ask: "修改前请求批准",
-  auto: "自动允许受控修改，最终应用仍需确认",
+  auto: "自动允许受控修改，完成后仍可撤销",
 };
 
 export function ConversationComposer({

@@ -4,12 +4,14 @@ import os
 import re
 import shutil
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
 from app.agent.models import RequirementClaim, RunReport, ToolCall, ToolError, ToolResult
+from app.checkpoints import CheckpointConflictError, CheckpointError
 
 
 class ToolContext:
@@ -19,11 +21,13 @@ class ToolContext:
         allowed_commands: dict[str, tuple[str, ...]],
         stop_event: asyncio.Event | None = None,
         ignored_names: frozenset[str] | None = None,
+        mutation_writer: Callable[[str, Path, str | None], None] | None = None,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
         self.allowed_commands = allowed_commands
         self.stop_event = stop_event or asyncio.Event()
         self.ignored_names = ignored_names or ListFilesTool.ignored_names
+        self.mutation_writer = mutation_writer
 
     def resolve_path(self, relative_path: str) -> Path:
         path = Path(relative_path)
@@ -317,11 +321,37 @@ class ApplyPatchTool(BaseTool):
             return prepared
         arguments, target, _, updated = prepared
         try:
-            if arguments.operation == "delete":
+            if context.mutation_writer is not None:
+                context.mutation_writer(
+                    arguments.path,
+                    target,
+                    None if arguments.operation == "delete" else updated,
+                )
+            elif arguments.operation == "delete":
                 target.unlink()
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(updated, encoding="utf-8")
+        except CheckpointConflictError as error:
+            return _failed_execution(
+                call,
+                "Project file changed outside the current Agent run",
+                str(error),
+                kind="conflict",
+                retryable=True,
+                suggestion="Read the latest file content before proposing another patch.",
+                details={"path": arguments.path},
+            )
+        except CheckpointError as error:
+            return _failed_execution(
+                call,
+                "Could not persist the project checkpoint",
+                str(error),
+                kind="io_error",
+                retryable=False,
+                suggestion="Stop the run and inspect the checkpoint storage before retrying.",
+                details={"path": arguments.path},
+            )
         except OSError as error:
             return _failed_execution(
                 call,

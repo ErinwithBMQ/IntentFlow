@@ -331,7 +331,7 @@ class SessionStore:
         reviewed_runs = [run for run in detail.runs if run.review_status != "pending"][-6:]
         run_lines: list[str] = []
         for run in reviewed_runs:
-            review = "applied to project" if run.review_status == "accepted" else "discarded"
+            review = "kept in project" if run.review_status == "accepted" else "undone from project"
             summary = run.report.summary if run.report else "No final report"
             files = run.context_checkpoint.modified_files if run.context_checkpoint else []
             evidence = run.context_checkpoint.verification_results if run.context_checkpoint else []

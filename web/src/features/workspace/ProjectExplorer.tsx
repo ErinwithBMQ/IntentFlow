@@ -4,26 +4,21 @@ import {
   FileCode2,
   Folder,
   FolderOpen,
-  GitCompareArrows,
 } from "lucide-react";
 import { useState } from "react";
 
-import type { WorkspaceEntry, WorkspaceScope, WorkspaceTree } from "../../services/api";
+import type { WorkspaceEntry, WorkspaceTree } from "../../services/api";
 import { workspaceFileKey } from "./workspaceState";
 
 type ProjectExplorerProps = {
   projectTree: WorkspaceTree | null;
-  runTree: WorkspaceTree | null;
-  runId: string | null;
   activeFileKey: string | null;
   error: string;
-  onOpenFile: (scope: WorkspaceScope, path: string) => void;
+  onOpenFile: (path: string) => void;
 };
 
 export function ProjectExplorer({
   projectTree,
-  runTree,
-  runId,
   activeFileKey,
   error,
   onOpenFile,
@@ -36,27 +31,13 @@ export function ProjectExplorer({
       </div>
       <div className="file-panel__content">
         <p className="workspace-version-note">
-          Agent 只修改隔离版本；点击“接受全部”后，变更才会写入项目当前版本。
+          Agent 经批准后直接修改当前项目；所有变化都可在 Diff 中审查并撤销。
         </p>
         <WorkspaceRoot
-          key={`project-${runId ? "run" : "idle"}`}
-          title="项目当前版本"
-          meta="正式文件"
-          scope="project"
+          title="当前项目"
+          meta="实时文件"
           tree={projectTree}
-          available
-          defaultExpanded={!runId}
-          activeFileKey={activeFileKey}
-          onOpenFile={onOpenFile}
-        />
-        <WorkspaceRoot
-          key={`run-${runId ?? "idle"}`}
-          title="Agent 修改版本"
-          meta={runId ? "隔离副本" : "等待运行"}
-          scope="run"
-          tree={runTree}
-          available={Boolean(runId)}
-          defaultExpanded={Boolean(runId)}
+          defaultExpanded
           activeFileKey={activeFileKey}
           onOpenFile={onOpenFile}
         />
@@ -69,20 +50,16 @@ export function ProjectExplorer({
 type WorkspaceRootProps = {
   title: string;
   meta: string;
-  scope: WorkspaceScope;
   tree: WorkspaceTree | null;
-  available: boolean;
   defaultExpanded: boolean;
   activeFileKey: string | null;
-  onOpenFile: (scope: WorkspaceScope, path: string) => void;
+  onOpenFile: (path: string) => void;
 };
 
 function WorkspaceRoot({
   title,
   meta,
-  scope,
   tree,
-  available,
   defaultExpanded,
   activeFileKey,
   onOpenFile,
@@ -97,7 +74,7 @@ function WorkspaceRoot({
       >
         <span>
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          <GitCompareArrows size={13} />{title}
+          <FolderOpen size={13} />{title}
         </span>
         <small>{meta}</small>
       </button>
@@ -107,7 +84,6 @@ function WorkspaceRoot({
             <FileTreeEntry
               key={entry.path}
               entry={entry}
-              scope={scope}
               depth={0}
               activeFileKey={activeFileKey}
               onOpenFile={onOpenFile}
@@ -117,7 +93,7 @@ function WorkspaceRoot({
           {tree.truncated && <p className="file-tree__notice">目录过大，仅显示前 2000 项</p>}
         </div>
       ) : (
-        <p className="file-tree__empty">{available ? "正在读取…" : "运行后显示 Agent 修改版本"}</p>
+        <p className="file-tree__empty">正在读取…</p>
       ))}
     </section>
   );
@@ -125,15 +101,13 @@ function WorkspaceRoot({
 
 type FileTreeEntryProps = {
   entry: WorkspaceEntry;
-  scope: WorkspaceScope;
   depth: number;
   activeFileKey: string | null;
-  onOpenFile: (scope: WorkspaceScope, path: string) => void;
+  onOpenFile: (path: string) => void;
 };
 
 function FileTreeEntry({
   entry,
-  scope,
   depth,
   activeFileKey,
   onOpenFile,
@@ -158,7 +132,6 @@ function FileTreeEntry({
           <FileTreeEntry
             key={child.path}
             entry={child}
-            scope={scope}
             depth={depth + 1}
             activeFileKey={activeFileKey}
             onOpenFile={onOpenFile}
@@ -168,14 +141,14 @@ function FileTreeEntry({
     );
   }
 
-  const key = workspaceFileKey(scope, entry.path);
+  const key = workspaceFileKey(entry.path);
   return (
     <button
       className={`file-tree__row file-tree__row--file ${activeFileKey === key ? "file-tree__row--active" : ""}`}
       type="button"
       style={{ paddingLeft: paddingLeft + 14 }}
       title={entry.path}
-      onClick={() => onOpenFile(scope, entry.path)}
+      onClick={() => onOpenFile(entry.path)}
     >
       <FileCode2 size={12} />
       <span>{entry.name}</span>

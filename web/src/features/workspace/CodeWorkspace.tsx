@@ -1,11 +1,10 @@
 import { FileCode2, LoaderCircle, X } from "lucide-react";
 
-import type { WorkspaceFile, WorkspaceScope } from "../../services/api";
+import type { WorkspaceFile } from "../../services/api";
 import { SyntaxLine } from "./SyntaxLine";
 
 export type OpenWorkspaceFile = {
   key: string;
-  scope: WorkspaceScope;
   path: string;
   state: "loading" | "ready" | "error";
   file: WorkspaceFile | null;
@@ -52,7 +51,7 @@ export function CodeWorkspace({
       {!activeFile ? (
         <WorkspaceEmpty
           title="尚未打开文件"
-          description="从左侧项目当前版本或 Agent 修改版本中选择一个文本文件。"
+          description="从左侧项目文件中选择一个文本文件。"
         />
       ) : activeFile.state === "loading" ? (
         <WorkspaceEmpty title="正在读取文件" description={activeFile.path} loading />
@@ -61,7 +60,7 @@ export function CodeWorkspace({
       ) : (
         <div className="code-document">
           <div className="document-meta">
-            <span>{activeFile.scope === "project" ? "项目当前版本" : "Agent 修改版本"}</span>
+            <span>项目文件</span>
             <code>{activeFile.file.path}</code>
             <small>{activeFile.file.language} · {formatBytes(activeFile.file.size)}</small>
           </div>

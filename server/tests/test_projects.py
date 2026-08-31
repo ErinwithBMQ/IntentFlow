@@ -32,16 +32,16 @@ def test_registry_registers_deduplicates_and_activates_projects(tmp_path: Path) 
     assert registry.get_active().id == first.id
 
 
-def test_registry_rejects_missing_files_and_runtime_copies(tmp_path: Path) -> None:
+def test_registry_rejects_missing_files_and_runtime_data(tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime-data"
-    run_copy = runtime_root / "runs" / "run-1" / "workspace"
-    run_copy.mkdir(parents=True)
+    checkpoint = runtime_root / "runs" / "run-1" / "checkpoint"
+    checkpoint.mkdir(parents=True)
     registry = ProjectRegistry(runtime_root / "intentflow.db", tmp_path)
 
     with pytest.raises(ProjectRegistrationError, match="不存在"):
         registry.register(tmp_path / "missing")
-    with pytest.raises(ProjectRegistrationError, match="运行副本"):
-        registry.register(run_copy)
+    with pytest.raises(ProjectRegistrationError, match="运行数据目录"):
+        registry.register(checkpoint)
 
 
 def test_registry_migrates_the_legacy_relative_project(tmp_path: Path) -> None:

@@ -8,9 +8,8 @@ import {
 } from "./workspaceState";
 
 describe("workspace state helpers", () => {
-  it("keeps project and run files separate", () => {
-    expect(workspaceFileKey("project", "src/tasks.js")).toBe("project:src/tasks.js");
-    expect(workspaceFileKey("run", "src/tasks.js")).toBe("run:src/tasks.js");
+  it("uses the project-relative path as the file key", () => {
+    expect(workspaceFileKey("src/tasks.js")).toBe("src/tasks.js");
   });
 
   it("opens changed related files in Diff and unchanged files in code", () => {

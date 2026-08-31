@@ -115,7 +115,7 @@ export function ProjectDialog({
               <FolderOpen size={30} />
               <div>
                 <strong>打开本机项目文件夹</strong>
-                <p>选择后只授权这个目录；Agent 仍会先在隔离副本中工作。</p>
+                <p>选择后只授权这个目录；Agent 经批准后会直接修改其中的项目文件。</p>
               </div>
             </div>
             <button className="project-dialog__primary" type="button" disabled={busy} onClick={onPickExisting}>

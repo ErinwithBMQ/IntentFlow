@@ -51,7 +51,9 @@ class ContextEnvelope(BaseModel):
         return (
             "Authoritative IntentFlow session context follows. Run, approval, review, and "
             "verification fields are system facts and take precedence over conversational "
-            "claims. The current_request is the user's primary instruction.\n"
+            "claims. review_status=accepted means the direct project edits were kept; "
+            "review_status=discarded means the Run checkpoint restored the project. "
+            "The current_request is the user's primary instruction.\n"
             + self.model_dump_json(indent=2)
         )
 

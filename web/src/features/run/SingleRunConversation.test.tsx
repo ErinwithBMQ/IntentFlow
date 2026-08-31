@@ -61,32 +61,32 @@ function renderReview(run: RunSnapshot) {
       reviewError=""
       onHighlightSources={() => undefined}
       onOpenRelatedFile={() => undefined}
-      onAccept={() => undefined}
-      onDiscard={() => undefined}
+      onKeep={() => undefined}
+      onUndo={() => undefined}
       onResolveApproval={() => undefined}
     />,
   );
 }
 
 describe("SingleRunConversation review actions", () => {
-  it("allows an unverified completed run to be applied with a warning", () => {
+  it("allows an unverified completed run to be kept with a warning", () => {
     const html = renderReview(runSnapshot("completed"));
 
     expect(html).toContain("没有自动化验证结果");
-    expect(html).toContain("仍然应用修改");
+    expect(html).toContain("仍然保留修改");
   });
 
-  it("allows a failed run to be deliberately applied", () => {
+  it("allows a failed run to be deliberately kept", () => {
     const html = renderReview(runSnapshot("failed"));
 
-    expect(html).toContain("修改可能不完整");
-    expect(html).toContain("仍然应用修改");
+    expect(html).toContain("当前项目可能包含不完整修改");
+    expect(html).toContain("仍然保留修改");
   });
 
   it("keeps the normal action for a verified completed run", () => {
     const html = renderReview(runSnapshot("completed", ["Build passed"]));
 
-    expect(html).toContain("应用到项目");
-    expect(html).not.toContain("仍然应用修改");
+    expect(html).toContain("保留修改");
+    expect(html).not.toContain("仍然保留修改");
   });
 });

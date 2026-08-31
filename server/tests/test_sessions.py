@@ -19,6 +19,7 @@ from app.agent.models import (
     ToolCall,
     ToolResult,
 )
+from app.checkpoints import RunCheckpoint
 from app.conversation_service import build_project_context
 from app.intent.compiler import IntentRequestDecision
 from app.intent.models import CanvasNote, CanvasPosition, IntentCanvas
@@ -184,9 +185,9 @@ def test_run_context_only_includes_reviewed_outcomes(tmp_path) -> None:
     context = store.build_run_context(session.id)
 
     assert "先实现筛选" in context
-    assert "run-applied: applied to project" in context
+    assert "run-applied: kept in project" in context
     assert "src/filter.ts" in context
-    assert "run-discarded: discarded" in context
+    assert "run-discarded: undone from project" in context
     assert "src/sort.ts" in context
     assert "run-pending" not in context
     assert "src/pending.ts" not in context
@@ -332,6 +333,50 @@ async def test_delete_session_removes_history_and_run_workspace(tmp_path, monkey
     assert store.load_runs() == []
     assert manager.get(snapshot.id) is None
     assert not run_root.exists()
+
+
+async def test_delete_session_undoes_pending_direct_run_before_cleanup(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = make_store(tmp_path / "intentflow.db")
+    session = store.create_session("todo-demo")
+    project_root = tmp_path / "examples" / "todo-demo"
+    project_root.mkdir(parents=True)
+    project_file = project_root / "source.txt"
+    project_file.write_text("original", encoding="utf-8")
+    checkpoint_root = tmp_path / "runtime-data" / "runs" / "run-direct-delete" / "checkpoint"
+    checkpoint = RunCheckpoint(checkpoint_root, project_root)
+    checkpoint.apply_text_change("source.txt", project_file, "agent change")
+    snapshot = RunSnapshot(
+        id="run-direct-delete",
+        status="completed",
+        review_status="pending",
+        workspace_relative_path="runtime-data/runs/run-direct-delete/checkpoint",
+        workspace_mode="direct",
+        session_id=session.id,
+        intent=sample_brief(),
+        events=[],
+    )
+    store.save_run(snapshot)
+    manager = RunManager(
+        tmp_path,
+        snapshot_sink=store.save_run,
+        default_project_root=project_root,
+    )
+    manager.restore(snapshot)
+    monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.delete(f"/api/sessions/{session.id}")
+
+    assert response.status_code == 204
+    assert project_file.read_text(encoding="utf-8") == "original"
+    assert store.get_detail(session.id) is None
+    assert manager.get(snapshot.id) is None
+    assert not checkpoint_root.parent.exists()
 
 
 async def test_delete_session_rejects_running_agent(tmp_path, monkeypatch) -> None:
@@ -712,7 +757,7 @@ async def test_agent_message_requires_previous_run_review(tmp_path, monkeypatch)
 
     restored = store.get_detail(session.id)
     assert response.status_code == 201
-    assert "需要先应用到项目或放弃修改" in response.json()["assistant_message"]["content"]
+    assert "需要先保留修改或撤销本轮" in response.json()["assistant_message"]["content"]
     assert restored is not None
     assert len(restored.messages) == 2
     assert restored.runs[0].review_status == "pending"

@@ -28,13 +28,13 @@ type SingleRunConversationProps = {
   run: RunSnapshot;
   runError: string;
   changes: ChangeSummary | null;
-  reviewAction: "accept" | "discard" | null;
+  reviewAction: "keep" | "undo" | null;
   toolApprovalAction: { approvalId: string; decision: ApprovalDecision } | null;
   reviewError: string;
   onHighlightSources: (sourceIds: string[]) => void;
   onOpenRelatedFile: (path: string) => void;
-  onAccept: () => void;
-  onDiscard: () => void;
+  onKeep: () => void;
+  onUndo: () => void;
   onResolveApproval: (approvalId: string, decision: ApprovalDecision) => void;
   showIntentContext?: boolean;
 };
@@ -48,8 +48,8 @@ const requirementStatusText = {
 
 const reviewStatusText = {
   pending: "待审查",
-  accepted: "已应用",
-  discarded: "已放弃",
+  accepted: "已保留",
+  discarded: "已撤销",
 } as const;
 
 function approvalReasonText(reason: string, target: string | null) {
@@ -67,8 +67,8 @@ export function SingleRunConversation({
   reviewError,
   onHighlightSources,
   onOpenRelatedFile,
-  onAccept,
-  onDiscard,
+  onKeep,
+  onUndo,
   onResolveApproval,
   showIntentContext = true,
 }: SingleRunConversationProps) {
@@ -88,7 +88,7 @@ export function SingleRunConversation({
         <>
           <div className="conversation-run-meta">
             <span>单次运行 · {run.id}</span>
-            <small><FileCode2 size={11} />{run.workspace_relative_path}</small>
+            <small><FileCode2 size={11} />{run.project_name ?? "当前项目"}</small>
           </div>
 
           <section className="conversation-message conversation-message--user">
@@ -354,31 +354,31 @@ export function SingleRunConversation({
                 </strong>
                 <p>
                   {run.status === "completed" && hasVerification
-                    ? "应用会将本次变更写回项目当前版本；放弃只记录决定，Agent 修改版本和 Diff 仍会保留。"
+                    ? "修改已经写入当前项目。你可以保留结果，或根据 Checkpoint 撤销本轮修改。"
                     : run.status === "completed"
-                      ? "实现已经结束，但没有自动化验证结果。请检查代码和 Diff，再决定应用或放弃。"
-                      : "本次运行未正常完成，修改可能不完整。你仍可检查代码和 Diff，并自行决定是否应用。"}
+                      ? "实现已经结束，但没有自动化验证结果。请检查代码和 Diff，再决定保留或撤销。"
+                      : "本次运行未正常完成，当前项目可能包含不完整修改。请检查 Diff 后决定保留或撤销。"}
                 </p>
                 <div className="review-actions">
                   <button
                     className="review-button review-button--discard"
                     type="button"
                     disabled={reviewAction !== null}
-                    onClick={onDiscard}
+                    onClick={onUndo}
                   >
-                    {reviewAction === "discard" && <LoaderCircle className="spin" size={12} />}
-                    放弃修改
+                    {reviewAction === "undo" && <LoaderCircle className="spin" size={12} />}
+                    撤销本轮
                   </button>
                   <button
                     className="review-button review-button--accept"
                     type="button"
                     disabled={reviewAction !== null || changes === null}
-                    onClick={onAccept}
+                    onClick={onKeep}
                   >
-                    {reviewAction === "accept" && <LoaderCircle className="spin" size={12} />}
+                    {reviewAction === "keep" && <LoaderCircle className="spin" size={12} />}
                     {run.status === "completed" && hasVerification
-                      ? "应用到项目"
-                      : "仍然应用修改"}
+                      ? "保留修改"
+                      : "仍然保留修改"}
                   </button>
                 </div>
               </>
@@ -386,13 +386,13 @@ export function SingleRunConversation({
               <>
                 <strong>
                   {run.review_status === "accepted"
-                    ? "本次修改已写入项目当前版本"
-                    : "本次修改已放弃"}
+                    ? "本次修改已保留"
+                    : "本次修改已撤销"}
                 </strong>
                 <p>
                   {run.review_status === "accepted"
-                    ? "项目当前版本已刷新；Agent 修改版本和历史 Diff 保留用于核对。"
-                    : "项目当前版本没有变化；Agent 修改版本和历史 Diff 保留用于核对。"}
+                    ? "当前项目保留 Agent 的修改，历史 Diff 可继续核对。"
+                    : "当前项目已恢复到本轮修改前，历史 Diff 仍保留用于核对。"}
                 </p>
               </>
             )}

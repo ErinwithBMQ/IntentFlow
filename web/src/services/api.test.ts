@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  acceptRun,
   activateProject,
   cancelSessionActivity,
   compileIntent,
@@ -9,7 +8,6 @@ import {
   createRun,
   createSession,
   deleteSession,
-  discardRun,
   getHealth,
   getProjectFile,
   getProjectTree,
@@ -18,12 +16,14 @@ import {
   getRunFileDiff,
   getRunTree,
   getSession,
+  keepRun,
   listProjects,
   listSessions,
   registerProject,
   resolveRunApproval,
   sendSessionMessage,
   stopRun,
+  undoRun,
   type IntentCanvas,
 } from "./api";
 
@@ -147,7 +147,7 @@ describe("getHealth", () => {
     );
   });
 
-  it("accepts and discards a completed run", async () => {
+  it("keeps and undoes a completed run", async () => {
     const snapshot = {
       id: "run-1",
       status: "completed",
@@ -166,17 +166,17 @@ describe("getHealth", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await acceptRun("run-1");
-    await discardRun("run-1");
+    await keepRun("run-1");
+    await undoRun("run-1");
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "/api/runs/run-1/accept",
+      "/api/runs/run-1/keep",
       expect.objectContaining({ method: "POST" }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "/api/runs/run-1/discard",
+      "/api/runs/run-1/undo",
       expect.objectContaining({ method: "POST" }),
     );
   });
