@@ -107,6 +107,13 @@ def test_session_store_restores_messages_canvas_and_runs(tmp_path) -> None:
         "增加未完成筛选",
         canvas_snapshot_id=canvas_snapshot.id,
     )
+    task_draft = store.add_task_draft(
+        session.id,
+        message.id,
+        sample_brief(),
+        status="confirmed",
+        canvas=canvas,
+    )
     run = RunSnapshot(
         id="run-1",
         status="completed",
@@ -114,6 +121,7 @@ def test_session_store_restores_messages_canvas_and_runs(tmp_path) -> None:
         workspace_relative_path="runtime-data/runs/run-1/todo-demo",
         session_id=session.id,
         trigger_message_id=message.id,
+        task_draft_id=task_draft.id,
         intent=sample_brief(),
         events=[
             RunEvent(
@@ -161,6 +169,13 @@ def test_session_store_restores_messages_canvas_and_runs(tmp_path) -> None:
     assert restored.messages[0].id == message.id
     assert restored.messages[0].run_id == run.id
     assert restored.canvas_snapshots[0].canvas.notes[0].text == "保留筛选按钮"
+    assert restored.task_drafts[0].version == 1
+    assert restored.task_drafts[0].status == "confirmed"
+    assert restored.task_drafts[0].source_message_id == message.id
+    assert restored.task_drafts[0].canvas is not None
+    assert restored.task_drafts[0].canvas.notes[0].text == "保留筛选按钮"
+    assert restored.task_drafts[0].intent == sample_brief()
+    assert restored.runs[0].task_draft_id == task_draft.id
     assert restored.runs[0].intent == sample_brief()
     assert restored.runs[0].context_checkpoint.summary == "已完成筛选实现"
     assert restored.runs[0].metrics.rounds[0].estimated_input_tokens == 120
@@ -628,6 +643,9 @@ async def test_plan_message_returns_structured_intent_without_a_run(tmp_path, mo
     payload = response.json()
     assert response.status_code == 201
     assert payload["run"] is None
+    assert payload["task_draft"]["status"] == "proposed"
+    assert payload["task_draft"]["version"] == 1
+    assert payload["assistant_message"]["task_draft_id"] == payload["task_draft"]["id"]
     assert payload["assistant_message"]["intent"]["title"] == "增加筛选"
     assert payload["assistant_message"]["content"] == (
         "收到，我先根据当前项目整理了一份《增加筛选》计划。"
@@ -966,12 +984,18 @@ async def test_agent_message_links_and_persists_its_run(tmp_path, monkeypatch) -
     assert response.json()["user_message"]["mode"] == "agent"
     assert response.json()["run"]["approval_mode"] == "auto"
     assert response.json()["run"]["project_id"] == "todo-demo"
+    assert response.json()["task_draft"]["status"] == "confirmed"
+    assert response.json()["run"]["task_draft_id"] == response.json()["task_draft"]["id"]
+    assert response.json()["assistant_message"]["task_draft_id"] == (
+        response.json()["task_draft"]["id"]
+    )
     assert response.json()["assistant_message"]["content"].startswith("收到，我会处理")
     assert response.json()["user_message"]["run_id"] == run_id
     assert restored is not None
     assert [message.run_id for message in restored.messages] == [run_id, run_id]
     assert restored.runs[0].status == "completed"
     assert restored.runs[0].trigger_message_id == restored.messages[0].id
+    assert restored.runs[0].task_draft_id == restored.task_drafts[0].id
     assert restored.runs[0].context_checkpoint is not None
     assert restored.session.approval_mode == "auto"
     assert restored.runs[0].metrics.model_turns == 2

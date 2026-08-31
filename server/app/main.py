@@ -40,6 +40,7 @@ from app.sessions import (
     SessionDetail,
     SessionRecord,
     SessionStore,
+    TaskDraftSnapshot,
 )
 from app.workspaces import (
     ChangeSummary,
@@ -149,6 +150,7 @@ class SendSessionMessageResponse(BaseModel):
     user_message: ConversationMessage
     assistant_message: ConversationMessage
     run: RunSnapshot | None = None
+    task_draft: TaskDraftSnapshot | None = None
 
 
 class CancelSessionActivityResponse(BaseModel):
@@ -431,16 +433,25 @@ async def _process_session_message(
         raise HTTPException(status_code=502, detail=f"AI 意图整理失败：{error}") from error
 
     if request.mode == "plan" or decision.action == "propose":
+        task_draft = session_store.add_task_draft(
+            session_id,
+            user_message.id,
+            brief,
+            status="proposed",
+            canvas=canvas_snapshot.canvas if canvas_snapshot else None,
+        )
         assistant_message = session_store.add_message(
             session_id,
             "assistant",
             "plan",
             f"收到，我先根据当前项目整理了一份《{brief.title}》计划。",
+            task_draft_id=task_draft.id,
             intent=brief,
         )
         return SendSessionMessageResponse(
             user_message=user_message,
             assistant_message=assistant_message,
+            task_draft=task_draft,
         )
 
     pending_run = session_store.get_pending_review_run(session_id)
@@ -463,11 +474,19 @@ async def _process_session_message(
             assistant_message=assistant_message,
         )
 
+    task_draft = session_store.add_task_draft(
+        session_id,
+        user_message.id,
+        brief,
+        status="confirmed",
+        canvas=canvas_snapshot.canvas if canvas_snapshot else None,
+    )
     try:
         run = run_manager.start(
             brief,
             session_id=session_id,
             trigger_message_id=user_message.id,
+            task_draft_id=task_draft.id,
             prior_context=session_context,
             approval_mode=approval_mode,
             project=project,
@@ -484,6 +503,7 @@ async def _process_session_message(
         (
             f"收到，我会处理《{brief.title}》。修改前会按当前权限请求批准，完成后可以查看 Diff。"
         ),
+        task_draft_id=task_draft.id,
         run_id=run.id,
         intent=brief,
     )
@@ -491,6 +511,7 @@ async def _process_session_message(
         user_message=user_message.model_copy(update={"run_id": run.id}),
         assistant_message=assistant_message,
         run=run,
+        task_draft=task_draft,
     )
 
 

@@ -46,6 +46,7 @@ class RunSnapshot(BaseModel):
     project_ignored_names: list[str] = Field(default_factory=lambda: sorted(DEFAULT_IGNORED_NAMES))
     session_id: str | None = None
     trigger_message_id: str | None = None
+    task_draft_id: str | None = None
     intent: IntentBrief | None = None
     approval_mode: Literal["ask", "auto"] = "ask"
     approvals: list[ToolApproval] = Field(default_factory=list)
@@ -70,6 +71,7 @@ class RunRecord:
         project_ignored_names: frozenset[str] = DEFAULT_IGNORED_NAMES,
         session_id: str | None = None,
         trigger_message_id: str | None = None,
+        task_draft_id: str | None = None,
         intent: IntentBrief | None = None,
         snapshot_sink: Callable[[RunSnapshot], None] | None = None,
         approval_timeout_seconds: float = 300.0,
@@ -91,6 +93,7 @@ class RunRecord:
         self.project_ignored_names = project_ignored_names
         self.session_id = session_id
         self.trigger_message_id = trigger_message_id
+        self.task_draft_id = task_draft_id
         self.intent = intent
         self.snapshot_sink = snapshot_sink
         self.approval_timeout_seconds = approval_timeout_seconds
@@ -266,6 +269,7 @@ class RunRecord:
             project_ignored_names=sorted(self.project_ignored_names),
             session_id=self.session_id,
             trigger_message_id=self.trigger_message_id,
+            task_draft_id=self.task_draft_id,
             intent=self.intent,
             approval_mode=self.approval_mode,
             approvals=list(self.approvals),
@@ -314,6 +318,7 @@ class RunManager:
         *,
         session_id: str | None = None,
         trigger_message_id: str | None = None,
+        task_draft_id: str | None = None,
         prior_context: str = "",
         approval_mode: Literal["ask", "auto"] = "ask",
         project: ProjectRecord | None = None,
@@ -354,6 +359,7 @@ class RunManager:
             project_ignored_names=ignored_names,
             session_id=session_id,
             trigger_message_id=trigger_message_id,
+            task_draft_id=task_draft_id,
             intent=intent,
             snapshot_sink=self.snapshot_sink,
             approval_timeout_seconds=self.approval_timeout_seconds,
@@ -462,6 +468,7 @@ class RunManager:
             project_ignored_names=frozenset(snapshot.project_ignored_names),
             session_id=snapshot.session_id,
             trigger_message_id=snapshot.trigger_message_id,
+            task_draft_id=snapshot.task_draft_id,
             intent=snapshot.intent,
             snapshot_sink=self.snapshot_sink,
             approval_timeout_seconds=self.approval_timeout_seconds,

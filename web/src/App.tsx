@@ -24,8 +24,9 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  TODO_EXAMPLE_EDGES,
-  TODO_EXAMPLE_NODES,
+  DEFAULT_CANVAS_EDGES,
+  DEFAULT_CANVAS_NODES,
+  fromIntentCanvas,
   isStoredCanvas,
   toIntentCanvas,
   type NoteNode as NoteNodeType,
@@ -78,11 +79,13 @@ import {
   type FileChange,
   type FileDiff,
   type IntentBrief,
+  type IntentCanvas,
   type ProjectResponse,
   type ProjectTemplate,
   type RunPreviewResponse,
   type RunSnapshot,
   type SessionRecord,
+  type TaskDraftSnapshot,
   type WorkspaceTree,
 } from "./services/api";
 
@@ -96,6 +99,14 @@ const LEFT_PANEL_WIDTH = 240;
 const MIN_MAIN_WORKSPACE_WIDTH = 80;
 const nodeTypes = { note: NoteNode };
 
+function defaultCanvas() {
+  return {
+    nodes: DEFAULT_CANVAS_NODES.map((node) => ({ ...node, data: { ...node.data } })),
+    edges: DEFAULT_CANVAS_EDGES.map((edge) => ({ ...edge })),
+    supplementalText: "可以在对话发送时选择附加当前 Canvas。",
+  };
+}
+
 function loadCanvas() {
   try {
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as unknown;
@@ -103,11 +114,24 @@ function loadCanvas() {
   } catch {
     // Ignore invalid local data and restore the stable demo canvas.
   }
-  return {
-    nodes: TODO_EXAMPLE_NODES,
-    edges: TODO_EXAMPLE_EDGES,
-    supplementalText: "这个功能要适合两分钟内现场演示。",
-  };
+  return defaultCanvas();
+}
+
+function loadSessionCanvas(sessionId: string, fallbackCanvas: IntentCanvas | null) {
+  const sessionStorageKey = `${STORAGE_KEY}.${sessionId}`;
+  try {
+    const stored = JSON.parse(localStorage.getItem(sessionStorageKey) ?? "null") as unknown;
+    if (isStoredCanvas(stored)) return stored;
+    const legacy = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as unknown;
+    if (isStoredCanvas(legacy)) {
+      localStorage.setItem(sessionStorageKey, JSON.stringify(legacy));
+      localStorage.removeItem(STORAGE_KEY);
+      return legacy;
+    }
+  } catch {
+    // Ignore invalid local data and restore the latest persisted snapshot or the default canvas.
+  }
+  return fallbackCanvas ? fromIntentCanvas(fallbackCanvas) : defaultCanvas();
 }
 
 function clampConversationWidth(width: number): number {
@@ -128,6 +152,7 @@ export function App() {
   const [nodes, setNodes, onNodesChange] = useNodesState<NoteNodeType>(initialCanvas.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialCanvas.edges);
   const [supplementalText, setSupplementalText] = useState(initialCanvas.supplementalText);
+  const [canvasStorageSessionId, setCanvasStorageSessionId] = useState<string | null>(null);
   const [connectionLabel, setConnectionLabel] = useState("相关");
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [projects, setProjects] = useState<ProjectResponse[]>([]);
@@ -163,6 +188,7 @@ export function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionMessages, setSessionMessages] = useState<ConversationMessage[]>([]);
   const [sessionRuns, setSessionRuns] = useState<RunSnapshot[]>([]);
+  const [taskDrafts, setTaskDrafts] = useState<TaskDraftSnapshot[]>([]);
   const [messageDraft, setMessageDraft] = useState("");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("ask");
   const [attachCanvas, setAttachCanvas] = useState(false);
@@ -219,8 +245,12 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ nodes, edges, supplementalText }));
-  }, [edges, nodes, supplementalText]);
+    if (!canvasStorageSessionId) return;
+    localStorage.setItem(
+      `${STORAGE_KEY}.${canvasStorageSessionId}`,
+      JSON.stringify({ nodes, edges, supplementalText }),
+    );
+  }, [canvasStorageSessionId, edges, nodes, supplementalText]);
 
   useEffect(() => {
     localStorage.setItem(CONVERSATION_WIDTH_KEY, String(conversationWidth));
@@ -320,9 +350,19 @@ export function App() {
   }
 
   function restoreExample() {
-    setNodes(TODO_EXAMPLE_NODES.map((node) => ({ ...node, data: { ...node.data } })));
-    setEdges(TODO_EXAMPLE_EDGES.map((edge) => ({ ...edge })));
-    setSupplementalText("这个功能要适合两分钟内现场演示。");
+    setNodes(DEFAULT_CANVAS_NODES.map((node) => ({ ...node, data: { ...node.data } })));
+    setEdges(DEFAULT_CANVAS_EDGES.map((edge) => ({ ...edge })));
+    setSupplementalText("可以在对话发送时选择附加当前 Canvas。");
+  }
+
+  function clearCanvas() {
+    if (
+      (nodes.length > 0 || edges.length > 0 || supplementalText.trim())
+      && !window.confirm("清空当前对话的 Canvas 吗？便签、连线和补充说明都会被删除。")
+    ) return;
+    setNodes([]);
+    setEdges([]);
+    setSupplementalText("");
   }
 
   function clearRunReview() {
@@ -348,6 +388,8 @@ export function App() {
     setActiveFileKey(null);
     setSessionMessages([]);
     setSessionRuns([]);
+    setTaskDrafts([]);
+    setCanvasStorageSessionId(null);
     setRun(null);
     setRunBrief(null);
     clearRunReview();
@@ -582,6 +624,7 @@ export function App() {
     clearRunReview();
     setRun(null);
     setRunBrief(null);
+    setCanvasStorageSessionId(null);
     setActiveSessionId(sessionId);
     if (projectId) localStorage.setItem(`${ACTIVE_SESSION_KEY}.${projectId}`, sessionId);
     try {
@@ -589,6 +632,13 @@ export function App() {
       setApprovalMode(detail.session.approval_mode);
       setSessionMessages(detail.messages);
       setSessionRuns(detail.runs);
+      setTaskDrafts(detail.task_drafts ?? []);
+      const latestCanvas = detail.canvas_snapshots.at(-1)?.canvas ?? null;
+      const sessionCanvas = loadSessionCanvas(sessionId, latestCanvas);
+      setNodes(sessionCanvas.nodes);
+      setEdges(sessionCanvas.edges);
+      setSupplementalText(sessionCanvas.supplementalText);
+      setCanvasStorageSessionId(sessionId);
       const latestRun = detail.runs.at(-1);
       if (latestRun) await selectSessionRun(latestRun);
     } catch (error) {
@@ -604,6 +654,7 @@ export function App() {
       setSessions((current) => [created, ...current]);
       setSessionMessages([]);
       setSessionRuns([]);
+      setTaskDrafts([]);
       setMessageDraft("");
       await loadSessionIntoView(created.id, project.id);
     } catch (error) {
@@ -638,6 +689,7 @@ export function App() {
       setSessions(remainingSessions);
       setSessionMessages([]);
       setSessionRuns([]);
+      setTaskDrafts([]);
       setRun(null);
       setRunBrief(null);
       await loadSessionIntoView(remainingSessions[0].id, project.id);
@@ -659,6 +711,7 @@ export function App() {
       mode: "agent",
       content,
       canvas_snapshot_id: attachCanvas ? "pending" : null,
+      task_draft_id: null,
       run_id: null,
       intent: null,
       created_at: new Date().toISOString(),
@@ -680,6 +733,10 @@ export function App() {
         response.user_message,
         response.assistant_message,
       ]);
+      const createdTaskDraft = response.task_draft;
+      if (createdTaskDraft) {
+        setTaskDrafts((current) => [...current, createdTaskDraft]);
+      }
       if (project) setSessions(await listSessions(project.id));
 
       const createdRun = response.run;
@@ -1198,6 +1255,7 @@ export function App() {
                 <div className="canvas-toolbar">
                   <button type="button" onClick={addNote}><Plus size={13} />添加便签</button>
                   <button type="button" onClick={restoreExample}><RotateCcw size={13} />恢复示例</button>
+                  <button type="button" onClick={clearCanvas}><Trash2 size={13} />清空</button>
                   <label>
                     <span><Link2 size={12} />连线文字</span>
                     <input
@@ -1338,6 +1396,7 @@ export function App() {
               <SessionConversation
                 messages={sessionMessages}
                 runs={sessionRuns}
+                taskDrafts={taskDrafts}
                 selectedRunId={run?.id ?? null}
                 selectedRunDetail={selectedRunDetail}
                 responding={messageSending}

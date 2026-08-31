@@ -60,6 +60,17 @@ export type IntentBrief = {
   constraints: string[];
 };
 
+export type TaskDraftSnapshot = {
+  id: string;
+  session_id: string;
+  version: number;
+  status: "proposed" | "confirmed";
+  source_message_id: string;
+  canvas: IntentCanvas | null;
+  intent: IntentBrief;
+  created_at: string;
+};
+
 export type IntentCompileResponse = {
   brief: IntentBrief;
   compiler: "ai" | "local";
@@ -174,6 +185,7 @@ export type RunSnapshot = {
   project_ignored_names: string[];
   session_id: string | null;
   trigger_message_id: string | null;
+  task_draft_id?: string | null;
   intent: IntentBrief | null;
   approval_mode: "ask" | "auto";
   approvals: ToolApproval[];
@@ -209,6 +221,7 @@ export type ConversationMessage = {
   mode: ConversationMode;
   content: string;
   canvas_snapshot_id: string | null;
+  task_draft_id?: string | null;
   run_id: string | null;
   intent: IntentBrief | null;
   created_at: string;
@@ -219,6 +232,7 @@ export type SessionDetail = {
   session: SessionRecord;
   messages: ConversationMessage[];
   canvas_snapshots: CanvasSnapshotRecord[];
+  task_drafts?: TaskDraftSnapshot[];
   runs: RunSnapshot[];
 };
 
@@ -226,6 +240,7 @@ export type SendSessionMessageResponse = {
   user_message: ConversationMessage;
   assistant_message: ConversationMessage;
   run: RunSnapshot | null;
+  task_draft?: TaskDraftSnapshot | null;
 };
 
 export type CancelSessionActivityResponse = {

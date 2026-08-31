@@ -4,6 +4,7 @@ import { Fragment, Suspense, lazy, type ReactNode } from "react";
 import type {
   ConversationMessage,
   RunSnapshot,
+  TaskDraftSnapshot,
 } from "../../services/api";
 
 const MarkdownContent = lazy(() => import("./MarkdownContent").then(
@@ -13,6 +14,7 @@ const MarkdownContent = lazy(() => import("./MarkdownContent").then(
 type SessionConversationProps = {
   messages: ConversationMessage[];
   runs: RunSnapshot[];
+  taskDrafts: TaskDraftSnapshot[];
   selectedRunId: string | null;
   selectedRunDetail: ReactNode;
   responding: boolean;
@@ -29,12 +31,14 @@ const runStatusLabels: Record<RunSnapshot["status"], string> = {
 export function SessionConversation({
   messages,
   runs,
+  taskDrafts,
   selectedRunId,
   selectedRunDetail,
   responding,
   onSelectRun,
 }: SessionConversationProps) {
   const runById = new Map(runs.map((run) => [run.id, run]));
+  const taskDraftById = new Map(taskDrafts.map((draft) => [draft.id, draft]));
 
   if (messages.length === 0) {
     return (
@@ -50,6 +54,9 @@ export function SessionConversation({
     <div className="session-conversation">
       {messages.map((message) => {
         const linkedRun = message.run_id ? runById.get(message.run_id) : null;
+        const linkedTaskDraft = message.task_draft_id
+          ? taskDraftById.get(message.task_draft_id)
+          : null;
         return (
           <Fragment key={message.id}>
             <section className={`session-message session-message--${message.role}`}>
@@ -72,7 +79,8 @@ export function SessionConversation({
                 {message.intent && (
                   <details className="session-intent-brief">
                     <summary>
-                      查看任务详情 · {message.intent.requirements.length} 项
+                      查看任务草案{linkedTaskDraft ? ` v${linkedTaskDraft.version}` : ""}
+                      {" · "}{message.intent.requirements.length} 项
                     </summary>
                     <div>
                       <strong>{message.intent.title}</strong>

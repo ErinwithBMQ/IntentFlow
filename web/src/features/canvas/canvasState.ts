@@ -9,45 +9,51 @@ export type NoteData = {
 
 export type NoteNode = Node<NoteData, "note">;
 
-export const TODO_EXAMPLE_NODES: NoteNode[] = [
+export type StoredCanvas = {
+  nodes: NoteNode[];
+  edges: Edge[];
+  supplementalText: string;
+};
+
+export const DEFAULT_CANVAS_NODES: NoteNode[] = [
   {
-    id: "idea-add-task",
+    id: "idea-goal",
     type: "note",
     position: { x: 100, y: 110 },
-    data: { text: "我想让用户能快速添加一个待办", label: "idea" },
+    data: { text: "描述你希望 Agent 完成的目标", label: "idea" },
   },
   {
-    id: "behavior-submit",
+    id: "behavior-change",
     type: "note",
     position: { x: 400, y: 80 },
-    data: { text: "输入内容，点击按钮后立刻出现在列表里", label: "behavior" },
+    data: { text: "列出需要实现或调整的具体行为", label: "behavior" },
   },
   {
-    id: "acceptance-empty",
+    id: "acceptance-check",
     type: "note",
     position: { x: 420, y: 280 },
-    data: { text: "如果什么都没写，就不要添加", label: "acceptance" },
+    data: { text: "写下可以检查的完成标准", label: "acceptance" },
   },
   {
-    id: "constraint-style",
+    id: "constraint-boundary",
     type: "note",
     position: { x: 110, y: 340 },
-    data: { text: "尽量保持现在简洁的页面样式", label: "constraint" },
+    data: { text: "补充不能改变的内容或技术限制", label: "constraint" },
   },
 ];
 
-export const TODO_EXAMPLE_EDGES: Edge[] = [
+export const DEFAULT_CANVAS_EDGES: Edge[] = [
   {
-    id: "edge-idea-behavior",
-    source: "idea-add-task",
-    target: "behavior-submit",
-    label: "具体来说",
+    id: "edge-goal-behavior",
+    source: "idea-goal",
+    target: "behavior-change",
+    label: "拆分为",
   },
   {
-    id: "edge-behavior-empty",
-    source: "behavior-submit",
-    target: "acceptance-empty",
-    label: "同时保证",
+    id: "edge-behavior-acceptance",
+    source: "behavior-change",
+    target: "acceptance-check",
+    label: "验收方式",
   },
 ];
 
@@ -73,11 +79,25 @@ export function toIntentCanvas(
   };
 }
 
-export function isStoredCanvas(value: unknown): value is {
-  nodes: NoteNode[];
-  edges: Edge[];
-  supplementalText: string;
-} {
+export function fromIntentCanvas(canvas: IntentCanvas): StoredCanvas {
+  return {
+    nodes: canvas.notes.map((note) => ({
+      id: note.id,
+      type: "note",
+      position: note.position,
+      data: { text: note.text, label: note.label },
+    })),
+    edges: canvas.connections.map((connection) => ({
+      id: connection.id,
+      source: connection.source,
+      target: connection.target,
+      label: connection.label,
+    })),
+    supplementalText: canvas.supplemental_text,
+  };
+}
+
+export function isStoredCanvas(value: unknown): value is StoredCanvas {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Record<string, unknown>;
   return (

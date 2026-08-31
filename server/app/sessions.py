@@ -17,6 +17,7 @@ from app.runs import RunSnapshot
 ConversationMode = Literal["ask", "plan", "agent"]
 ApprovalMode = Literal["ask", "auto"]
 MessageRole = Literal["user", "assistant"]
+TaskDraftStatus = Literal["proposed", "confirmed"]
 
 
 class SessionRecord(BaseModel):
@@ -35,6 +36,17 @@ class CanvasSnapshotRecord(BaseModel):
     created_at: str
 
 
+class TaskDraftSnapshot(BaseModel):
+    id: str
+    session_id: str
+    version: int
+    status: TaskDraftStatus
+    source_message_id: str
+    canvas: IntentCanvas | None = None
+    intent: IntentBrief
+    created_at: str
+
+
 class ConversationMessage(BaseModel):
     id: str
     session_id: str
@@ -42,6 +54,7 @@ class ConversationMessage(BaseModel):
     mode: ConversationMode
     content: str
     canvas_snapshot_id: str | None = None
+    task_draft_id: str | None = None
     run_id: str | None = None
     intent: IntentBrief | None = None
     created_at: str
@@ -52,6 +65,7 @@ class SessionDetail(BaseModel):
     session: SessionRecord
     messages: list[ConversationMessage] = Field(default_factory=list)
     canvas_snapshots: list[CanvasSnapshotRecord] = Field(default_factory=list)
+    task_drafts: list[TaskDraftSnapshot] = Field(default_factory=list)
     runs: list[RunSnapshot] = Field(default_factory=list)
 
 
@@ -149,6 +163,10 @@ class SessionStore:
                 "SELECT * FROM canvas_snapshots WHERE session_id = ? ORDER BY created_at",
                 (session_id,),
             ).fetchall()
+            task_draft_rows = connection.execute(
+                "SELECT * FROM task_drafts WHERE session_id = ? ORDER BY version",
+                (session_id,),
+            ).fetchall()
             run_rows = connection.execute(
                 "SELECT snapshot_json FROM runs WHERE session_id = ? ORDER BY created_at",
                 (session_id,),
@@ -157,6 +175,7 @@ class SessionStore:
             session=session,
             messages=[_message_from_row(row) for row in message_rows],
             canvas_snapshots=[_canvas_from_row(row) for row in canvas_rows],
+            task_drafts=[_task_draft_from_row(row) for row in task_draft_rows],
             runs=[RunSnapshot.model_validate_json(row["snapshot_json"]) for row in run_rows],
         )
 
@@ -206,6 +225,50 @@ class SessionStore:
             )
         return snapshot
 
+    def add_task_draft(
+        self,
+        session_id: str,
+        source_message_id: str,
+        intent: IntentBrief,
+        *,
+        status: TaskDraftStatus,
+        canvas: IntentCanvas | None = None,
+    ) -> TaskDraftSnapshot:
+        with self._lock, self._connect() as connection:
+            version = connection.execute(
+                "SELECT COALESCE(MAX(version), 0) + 1 FROM task_drafts WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+            snapshot = TaskDraftSnapshot(
+                id=f"task-draft-{uuid4().hex[:12]}",
+                session_id=session_id,
+                version=version,
+                status=status,
+                source_message_id=source_message_id,
+                canvas=canvas.model_copy(deep=True) if canvas else None,
+                intent=intent.model_copy(deep=True),
+                created_at=_now(),
+            )
+            connection.execute(
+                """
+                INSERT INTO task_drafts (
+                  id, session_id, version, status, source_message_id,
+                  canvas_json, intent_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot.id,
+                    snapshot.session_id,
+                    snapshot.version,
+                    snapshot.status,
+                    snapshot.source_message_id,
+                    snapshot.canvas.model_dump_json() if snapshot.canvas else None,
+                    snapshot.intent.model_dump_json(),
+                    snapshot.created_at,
+                ),
+            )
+        return snapshot
+
     def add_message(
         self,
         session_id: str,
@@ -214,6 +277,7 @@ class SessionStore:
         content: str,
         *,
         canvas_snapshot_id: str | None = None,
+        task_draft_id: str | None = None,
         run_id: str | None = None,
         intent: IntentBrief | None = None,
     ) -> ConversationMessage:
@@ -230,6 +294,7 @@ class SessionStore:
                 mode=mode,
                 content=content,
                 canvas_snapshot_id=canvas_snapshot_id,
+                task_draft_id=task_draft_id,
                 run_id=run_id,
                 intent=intent,
                 created_at=now,
@@ -239,8 +304,8 @@ class SessionStore:
                 """
                 INSERT INTO messages (
                   id, session_id, role, mode, content, canvas_snapshot_id,
-                  run_id, intent_json, created_at, sequence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  task_draft_id, run_id, intent_json, created_at, sequence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message.id,
@@ -249,6 +314,7 @@ class SessionStore:
                     mode,
                     content,
                     canvas_snapshot_id,
+                    task_draft_id,
                     run_id,
                     intent.model_dump_json() if intent else None,
                     now,
@@ -369,6 +435,17 @@ class SessionStore:
                   canvas_json TEXT NOT NULL,
                   created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS task_drafts (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                  version INTEGER NOT NULL,
+                  status TEXT NOT NULL,
+                  source_message_id TEXT NOT NULL,
+                  canvas_json TEXT,
+                  intent_json TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  UNIQUE(session_id, version)
+                );
                 CREATE TABLE IF NOT EXISTS messages (
                   id TEXT PRIMARY KEY,
                   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -376,6 +453,7 @@ class SessionStore:
                   mode TEXT NOT NULL,
                   content TEXT NOT NULL,
                   canvas_snapshot_id TEXT REFERENCES canvas_snapshots(id),
+                  task_draft_id TEXT REFERENCES task_drafts(id),
                   run_id TEXT,
                   intent_json TEXT,
                   created_at TEXT NOT NULL,
@@ -399,6 +477,11 @@ class SessionStore:
                 connection.execute(
                     "ALTER TABLE sessions ADD COLUMN approval_mode TEXT NOT NULL DEFAULT 'ask'"
                 )
+            message_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(messages)")
+            }
+            if "task_draft_id" not in message_columns:
+                connection.execute("ALTER TABLE messages ADD COLUMN task_draft_id TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
@@ -426,6 +509,7 @@ def _message_from_row(row: sqlite3.Row) -> ConversationMessage:
         mode=row["mode"],
         content=row["content"],
         canvas_snapshot_id=row["canvas_snapshot_id"],
+        task_draft_id=row["task_draft_id"],
         run_id=row["run_id"],
         intent=IntentBrief.model_validate_json(row["intent_json"]) if row["intent_json"] else None,
         created_at=row["created_at"],
@@ -438,6 +522,21 @@ def _canvas_from_row(row: sqlite3.Row) -> CanvasSnapshotRecord:
         id=row["id"],
         session_id=row["session_id"],
         canvas=IntentCanvas.model_validate_json(row["canvas_json"]),
+        created_at=row["created_at"],
+    )
+
+
+def _task_draft_from_row(row: sqlite3.Row) -> TaskDraftSnapshot:
+    return TaskDraftSnapshot(
+        id=row["id"],
+        session_id=row["session_id"],
+        version=row["version"],
+        status=row["status"],
+        source_message_id=row["source_message_id"],
+        canvas=IntentCanvas.model_validate_json(row["canvas_json"])
+        if row["canvas_json"]
+        else None,
+        intent=IntentBrief.model_validate_json(row["intent_json"]),
         created_at=row["created_at"],
     )
 

@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  TODO_EXAMPLE_EDGES,
-  TODO_EXAMPLE_NODES,
+  DEFAULT_CANVAS_EDGES,
+  DEFAULT_CANVAS_NODES,
   edgeChangesInvalidateIntent,
+  fromIntentCanvas,
   nodeChangesInvalidateIntent,
   toIntentCanvas,
 } from "./canvasState";
@@ -11,33 +12,47 @@ import {
 describe("toIntentCanvas", () => {
   it("preserves note IDs, free labels, positions, and connection text", () => {
     const canvas = toIntentCanvas(
-      TODO_EXAMPLE_NODES,
-      TODO_EXAMPLE_EDGES,
+      DEFAULT_CANVAS_NODES,
+      DEFAULT_CANVAS_EDGES,
       "还有一句补充说明",
     );
 
     expect(canvas.notes[0]).toMatchObject({
-      id: "idea-add-task",
+      id: "idea-goal",
       label: "idea",
       position: { x: 100, y: 110 },
     });
-    expect(canvas.connections[0]).toMatchObject({ label: "具体来说" });
+    expect(canvas.connections[0]).toMatchObject({ label: "拆分为" });
     expect(canvas.supplemental_text).toBe("还有一句补充说明");
+  });
+
+  it("restores a persisted canvas into editable React Flow state", () => {
+    const canvas = toIntentCanvas(
+      DEFAULT_CANVAS_NODES,
+      DEFAULT_CANVAS_EDGES,
+      "会话自己的补充说明",
+    );
+
+    const restored = fromIntentCanvas(canvas);
+
+    expect(restored.nodes).toEqual(DEFAULT_CANVAS_NODES);
+    expect(restored.edges).toEqual(DEFAULT_CANVAS_EDGES);
+    expect(restored.supplementalText).toBe("会话自己的补充说明");
   });
 });
 
 describe("intent invalidation", () => {
   it("keeps a compiled brief when nodes only move or resize", () => {
     expect(nodeChangesInvalidateIntent([
-      { type: "position", id: "idea-add-task", position: { x: 12, y: 18 }, dragging: true },
-      { type: "dimensions", id: "idea-add-task", dimensions: { width: 220, height: 120 } },
-      { type: "select", id: "idea-add-task", selected: true },
+      { type: "position", id: "idea-goal", position: { x: 12, y: 18 }, dragging: true },
+      { type: "dimensions", id: "idea-goal", dimensions: { width: 220, height: 120 } },
+      { type: "select", id: "idea-goal", selected: true },
     ])).toBe(false);
   });
 
   it("invalidates a compiled brief when notes or connections change", () => {
-    expect(nodeChangesInvalidateIntent([{ type: "remove", id: "idea-add-task" }])).toBe(true);
-    expect(edgeChangesInvalidateIntent([{ type: "remove", id: "edge-idea-behavior" }])).toBe(true);
-    expect(edgeChangesInvalidateIntent([{ type: "select", id: "edge-idea-behavior", selected: true }])).toBe(false);
+    expect(nodeChangesInvalidateIntent([{ type: "remove", id: "idea-goal" }])).toBe(true);
+    expect(edgeChangesInvalidateIntent([{ type: "remove", id: "edge-goal-behavior" }])).toBe(true);
+    expect(edgeChangesInvalidateIntent([{ type: "select", id: "edge-goal-behavior", selected: true }])).toBe(false);
   });
 });

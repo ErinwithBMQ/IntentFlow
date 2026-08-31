@@ -1,7 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { ConversationMessage, IntentBrief } from "../../services/api";
+import type {
+  ConversationMessage,
+  IntentBrief,
+  TaskDraftSnapshot,
+} from "../../services/api";
 import { ConversationComposer } from "./ConversationComposer";
 import { MarkdownContent } from "./MarkdownContent";
 import { SessionConversation } from "./SessionConversation";
@@ -14,6 +18,7 @@ function assistantMessage(content: string): ConversationMessage {
     mode: "ask",
     content,
     canvas_snapshot_id: null,
+    task_draft_id: null,
     run_id: null,
     intent: null,
     created_at: "2026-08-29T00:00:00Z",
@@ -35,6 +40,17 @@ const intent: IntentBrief = {
   constraints: [],
 };
 
+const taskDraft: TaskDraftSnapshot = {
+  id: "task-draft-1",
+  session_id: "session-1",
+  version: 2,
+  status: "proposed",
+  source_message_id: "message-user-1",
+  canvas: null,
+  intent,
+  created_at: "2026-08-31T00:00:00Z",
+};
+
 describe("SessionConversation", () => {
   it("renders assistant Markdown without executing raw HTML", () => {
     const html = renderToStaticMarkup(
@@ -53,6 +69,7 @@ describe("SessionConversation", () => {
       <SessionConversation
         messages={[assistantMessage("上一条回复")]}
         runs={[]}
+        taskDrafts={[]}
         selectedRunId={null}
         selectedRunDetail={null}
         responding
@@ -67,11 +84,13 @@ describe("SessionConversation", () => {
   it("collapses the task breakdown by default", () => {
     const message = assistantMessage("收到，我会处理《优化 2048 页面》。");
     message.intent = intent;
+    message.task_draft_id = taskDraft.id;
 
     const html = renderToStaticMarkup(
       <SessionConversation
         messages={[message]}
         runs={[]}
+        taskDrafts={[taskDraft]}
         selectedRunId={null}
         selectedRunDetail={null}
         responding={false}
@@ -81,7 +100,7 @@ describe("SessionConversation", () => {
 
     expect(html).toContain('<details class="session-intent-brief">');
     expect(html).not.toContain('<details class="session-intent-brief" open="">');
-    expect(html).toContain("查看任务详情 · 1 项");
+    expect(html).toContain("查看任务草案 v2 · 1 项");
     expect(html).toContain("删除副标题文本");
     expect(html).not.toContain("REQ-01");
   });
