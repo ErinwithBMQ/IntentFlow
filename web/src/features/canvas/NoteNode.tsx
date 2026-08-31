@@ -14,11 +14,13 @@ const LABELS: Array<{ value: CanvasNoteLabel | ""; label: string }> = [
 ];
 
 type NoteNodeCallbacks = {
+  editable: boolean;
   onChange: (id: string, text: string, label: CanvasNoteLabel | null) => void;
   onRemove: (id: string) => void;
 };
 
 const NoteNodeContext = createContext<NoteNodeCallbacks>({
+  editable: true,
   onChange: () => undefined,
   onRemove: () => undefined,
 });
@@ -47,6 +49,7 @@ export function NoteNode({ id, data, selected }: NodeProps<NoteNodeType>) {
           aria-label="删除便签"
           className="note-node__remove nodrag"
           type="button"
+          disabled={!callbacks.editable}
           onClick={() => callbacks.onRemove(id)}
         >
           <X size={13} />
@@ -55,6 +58,7 @@ export function NoteNode({ id, data, selected }: NodeProps<NoteNodeType>) {
       <textarea
         className="note-node__text nodrag nowheel"
         value={data.text}
+        readOnly={!callbacks.editable}
         placeholder="写下脑海里的片段……"
         onChange={(event) => callbacks.onChange(id, event.target.value, data.label)}
       />
@@ -62,6 +66,7 @@ export function NoteNode({ id, data, selected }: NodeProps<NoteNodeType>) {
         aria-label="便签标签"
         className="note-node__label nodrag"
         value={data.label ?? ""}
+        disabled={!callbacks.editable}
         onChange={(event) =>
           callbacks.onChange(id, data.text, (event.target.value || null) as CanvasNoteLabel | null)
         }

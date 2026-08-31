@@ -170,4 +170,55 @@ describe("SingleRunConversation review actions", () => {
     expect(html).toContain("Remove the subtitle");
     expect(html.match(/test exited with code 0/g)).toHaveLength(1);
   });
+
+  it("shows one readable log item for a completed tool lifecycle", () => {
+    const run = runSnapshot("completed");
+    run.events = [
+      {
+        sequence: 1,
+        kind: "model_turn",
+        phase: "planning",
+        status: "running",
+        action: "查看工作区文件结构",
+        reason: "定位项目入口",
+        related_requirement_ids: [],
+        tool_name: null,
+        target: null,
+        evidence: [],
+      },
+      {
+        sequence: 2,
+        kind: "tool_started",
+        phase: "acting",
+        status: "running",
+        action: "查看工作区文件结构",
+        reason: "定位项目入口",
+        related_requirement_ids: [],
+        tool_name: "list_files",
+        target: ".",
+        evidence: [],
+      },
+      {
+        sequence: 3,
+        kind: "tool_finished",
+        phase: "acting",
+        status: "succeeded",
+        action: "Listed 10 entries",
+        reason: "定位项目入口",
+        related_requirement_ids: [],
+        tool_name: "list_files",
+        target: ".",
+        evidence: [],
+      },
+    ];
+
+    const html = renderReview(run);
+
+    expect(html).toContain("查看运行记录 · 1 项");
+    expect(html.match(/查看工作区文件结构/g)).toHaveLength(1);
+    expect(html).toContain("Listed 10 entries");
+    expect(html).not.toContain("model_turn");
+    expect(html).not.toContain("tool_started");
+    expect(html).not.toContain("tool_finished");
+  });
 });

@@ -288,7 +288,7 @@ describe("getHealth", () => {
     await listSessions("project-1");
     await createSession("project-1");
     await getSession(session.id);
-    await sendSessionMessage(session.id, "增加筛选功能", "auto", null);
+    await sendSessionMessage(session.id, "增加筛选功能", "auto", null, "task-draft-1");
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
@@ -308,6 +308,7 @@ describe("getHealth", () => {
           approval_mode: "auto",
           attach_canvas: false,
           canvas: null,
+          task_draft_id: "task-draft-1",
         }),
       }),
     );

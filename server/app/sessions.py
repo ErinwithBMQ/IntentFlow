@@ -42,6 +42,7 @@ class TaskDraftSnapshot(BaseModel):
     version: int
     status: TaskDraftStatus
     source_message_id: str
+    parent_id: str | None = None
     canvas: IntentCanvas | None = None
     intent: IntentBrief
     created_at: str
@@ -233,6 +234,7 @@ class SessionStore:
         *,
         status: TaskDraftStatus,
         canvas: IntentCanvas | None = None,
+        parent_id: str | None = None,
     ) -> TaskDraftSnapshot:
         with self._lock, self._connect() as connection:
             version = connection.execute(
@@ -245,6 +247,7 @@ class SessionStore:
                 version=version,
                 status=status,
                 source_message_id=source_message_id,
+                parent_id=parent_id,
                 canvas=canvas.model_copy(deep=True) if canvas else None,
                 intent=intent.model_copy(deep=True),
                 created_at=_now(),
@@ -253,8 +256,8 @@ class SessionStore:
                 """
                 INSERT INTO task_drafts (
                   id, session_id, version, status, source_message_id,
-                  canvas_json, intent_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                  parent_id, canvas_json, intent_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     snapshot.id,
@@ -262,12 +265,21 @@ class SessionStore:
                     snapshot.version,
                     snapshot.status,
                     snapshot.source_message_id,
+                    snapshot.parent_id,
                     snapshot.canvas.model_dump_json() if snapshot.canvas else None,
                     snapshot.intent.model_dump_json(),
                     snapshot.created_at,
                 ),
             )
         return snapshot
+
+    def get_task_draft(self, task_draft_id: str) -> TaskDraftSnapshot | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM task_drafts WHERE id = ?",
+                (task_draft_id,),
+            ).fetchone()
+        return _task_draft_from_row(row) if row is not None else None
 
     def add_message(
         self,
@@ -338,6 +350,13 @@ class SessionStore:
             connection.execute(
                 "UPDATE messages SET run_id = ? WHERE id = ?",
                 (run_id, message_id),
+            )
+
+    def attach_task_draft(self, message_id: str, task_draft_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE messages SET task_draft_id = ? WHERE id = ?",
+                (task_draft_id, message_id),
             )
 
     def save_run(self, snapshot: RunSnapshot) -> None:
@@ -441,6 +460,7 @@ class SessionStore:
                   version INTEGER NOT NULL,
                   status TEXT NOT NULL,
                   source_message_id TEXT NOT NULL,
+                  parent_id TEXT,
                   canvas_json TEXT,
                   intent_json TEXT NOT NULL,
                   created_at TEXT NOT NULL,
@@ -482,6 +502,11 @@ class SessionStore:
             }
             if "task_draft_id" not in message_columns:
                 connection.execute("ALTER TABLE messages ADD COLUMN task_draft_id TEXT")
+            task_draft_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(task_drafts)")
+            }
+            if "parent_id" not in task_draft_columns:
+                connection.execute("ALTER TABLE task_drafts ADD COLUMN parent_id TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
@@ -533,6 +558,7 @@ def _task_draft_from_row(row: sqlite3.Row) -> TaskDraftSnapshot:
         version=row["version"],
         status=row["status"],
         source_message_id=row["source_message_id"],
+        parent_id=row["parent_id"],
         canvas=IntentCanvas.model_validate_json(row["canvas_json"])
         if row["canvas_json"]
         else None,

@@ -243,6 +243,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .raw-events article { min-width: 0; display: grid; gap: 3px; }
 .raw-events span { font: 10px var(--font-code); }
 .raw-events strong { color: #626965; font-size: 11px; font-weight: 500; }
+.raw-events small { color: #7d837f; font-size: 11px; }
 .raw-events code { overflow-wrap: anywhere; color: #6f7672; font: 10px var(--font-code); }
 .requirement-results { margin-top: 12px; border-top: 1px solid #deddd7; color: #6b716d; }
 .requirement-results > summary { padding: 11px 0 4px; display: flex; align-items: center; gap: 6px; color: #59635d; font-size: 11px; font-weight: 600; cursor: pointer; list-style: none; }
@@ -326,6 +327,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .canvas-toolbar { padding: 7px 10px; display: flex; align-items: center; gap: 7px; border-bottom: 1px solid #e4e3de; background: #fffefa; }
 .canvas-toolbar button { height: 33px; padding: 0 9px; display: flex; align-items: center; gap: 5px; border: 1px solid #deddd7; border-radius: 4px; color: #525955; background: #f7f6f2; font-size: 12px; cursor: pointer; }
 .canvas-toolbar button:first-child { border-color: #cbd5fb; color: #244bb5; background: #f2f5ff; }
+.canvas-toolbar button:disabled { cursor: not-allowed; opacity: .42; }
+.canvas-toolbar .canvas-confirm-button { border-color: #315bb5; color: #fff; background: #315bb5; }
+.canvas-toolbar--proposal { justify-content: space-between; color: #315bb5; font-size: 12px; font-weight: 600; }
+.canvas-toolbar__actions { display: flex; gap: 7px; }
+.canvas-toolbar--proposal .canvas-toolbar__actions button:first-child { border-color: #315bb5; color: #fff; background: #315bb5; }
 .canvas-toolbar label { height: 33px; display: flex; align-items: center; gap: 6px; color: #777d79; font-size: 11px; white-space: nowrap; }
 .canvas-toolbar label span { display: flex; align-items: center; gap: 4px; }
 .canvas-toolbar input { width: 118px; height: 31px; padding: 0 7px; border: 1px solid #deddd7; border-radius: 4px; color: #333a36; background: #fff; font-size: 12px; }

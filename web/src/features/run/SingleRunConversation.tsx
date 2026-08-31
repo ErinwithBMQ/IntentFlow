@@ -23,6 +23,7 @@ import { SyntaxLine } from "../workspace/SyntaxLine";
 import { diffLineKind, languageFromPath } from "../workspace/workspaceState";
 import {
   buildConversationActivities,
+  buildRunLogEntries,
   type ConversationAction,
   verificationStatusText,
 } from "./conversation";
@@ -516,15 +517,24 @@ function StatusIcon({ status }: { status: RunEvent["status"] }) {
 }
 
 function RawEventDetails({ events }: { events: RunEvent[] }) {
+  const entries = buildRunLogEntries(events);
+
   return (
     <details className="raw-events">
-      <summary>查看原始运行记录 · {events.length} 条</summary>
+      <summary>查看运行记录 · {entries.length} 项</summary>
       <div>
-        {events.map((event) => (
-          <article key={event.sequence}>
-            <span>#{event.sequence.toString().padStart(2, "0")} · {event.kind}</span>
-            <strong>{event.action}</strong>
-            {event.target && <code>{event.target}</code>}
+        {entries.map((entry) => (
+          <article key={entry.id}>
+            <span>
+              #{entry.sequenceStart.toString().padStart(2, "0")}
+              {entry.sequenceEnd > entry.sequenceStart
+                ? `–#${entry.sequenceEnd.toString().padStart(2, "0")}`
+                : ""}
+              {` · ${entry.label}`}
+            </span>
+            <strong>{entry.action}</strong>
+            {entry.result && <small>{entry.result}</small>}
+            {entry.target && <code>{entry.target}</code>}
           </article>
         ))}
       </div>

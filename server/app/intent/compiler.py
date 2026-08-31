@@ -5,7 +5,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.agent.models import IntentBrief, IntentRequirement
-from app.intent.models import CanvasNote, IntentCanvas
+from app.intent.models import CanvasConnection, CanvasNote, CanvasPosition, IntentCanvas
 
 
 class IntentCompileError(RuntimeError):
@@ -250,6 +250,233 @@ def compile_canvas(canvas: IntentCanvas) -> IntentBrief:
     return brief
 
 
+def canvas_from_intent_brief(brief: IntentBrief) -> IntentCanvas:
+    visible_requirements = brief.requirements[:5]
+    notes = [
+        CanvasNote(
+            id="draft-goal",
+            text=_shorten(brief.goal.strip(), 88),
+            label="idea",
+            position=CanvasPosition(x=70, y=190),
+        )
+    ]
+    connections: list[CanvasConnection] = []
+
+    for index, requirement in enumerate(visible_requirements, start=1):
+        requirement_id = f"draft-requirement-{index}"
+        column = (index - 1) % 2
+        row = (index - 1) // 2
+        notes.append(
+            CanvasNote(
+                id=requirement_id,
+                text=_shorten(requirement.description.strip(), 72),
+                label="behavior",
+                position=CanvasPosition(x=360 + column * 310, y=40 + row * 180),
+            )
+        )
+        connections.append(
+            CanvasConnection(
+                id=f"draft-goal-requirement-{index}",
+                source="draft-goal",
+                target=requirement_id,
+                label="拆分为",
+            )
+        )
+
+    if brief.constraints:
+        notes.append(
+            CanvasNote(
+                id="draft-constraints",
+                text=_canvas_constraint_summary(brief.constraints),
+                label="constraint",
+                position=CanvasPosition(x=70, y=410),
+            )
+        )
+        connections.append(
+            CanvasConnection(
+                id="draft-goal-constraints",
+                source="draft-goal",
+                target="draft-constraints",
+                label="受限于",
+            )
+        )
+
+    return IntentCanvas(notes=notes, connections=connections)
+
+
+def apply_canvas_summary_to_brief(
+    original: IntentBrief,
+    canvas: IntentCanvas,
+) -> IntentBrief:
+    """Apply overview edits without discarding details kept in the task draft."""
+    validate_canvas_input(canvas)
+    notes = [note for note in canvas.notes if note.text.strip()]
+    note_by_id = {note.id: note for note in notes}
+    generated = canvas_from_intent_brief(original)
+    generated_by_id = {note.id: note for note in generated.notes}
+
+    goal_note = note_by_id.get("draft-goal") or next(
+        (note for note in notes if note.label == "idea"),
+        None,
+    )
+    generated_goal = generated_by_id["draft-goal"].text
+    goal = original.goal
+    title = original.title
+    if goal_note is not None and goal_note.text.strip() != generated_goal:
+        goal = goal_note.text.strip()
+        title = _shorten(goal, 28)
+
+    requirements: list[IntentRequirement] = []
+    visible_count = min(len(original.requirements), 5)
+    represented_note_ids: set[str] = set()
+    for index, requirement in enumerate(original.requirements[:visible_count], start=1):
+        note_id = f"draft-requirement-{index}"
+        note = note_by_id.get(note_id)
+        if note is None or note.label != "behavior":
+            continue
+        represented_note_ids.add(note_id)
+        generated_text = generated_by_id[note_id].text
+        description = (
+            requirement.description
+            if note.text.strip() == generated_text
+            else note.text.strip()
+        )
+        acceptance_notes = _connected_notes_with_label(
+            note,
+            canvas,
+            note_by_id,
+            "acceptance",
+        )
+        requirements.append(
+            IntentRequirement(
+                id="",
+                description=description,
+                acceptance_criteria=(
+                    [item.text.strip() for item in acceptance_notes]
+                    if acceptance_notes
+                    else requirement.acceptance_criteria
+                ),
+                source_ids=[note.id, *(item.id for item in acceptance_notes)],
+            )
+        )
+
+    summary_source_id = goal_note.id if goal_note is not None else notes[0].id
+    for requirement in original.requirements[visible_count:]:
+        requirements.append(
+            requirement.model_copy(
+                update={"id": "", "source_ids": [summary_source_id]},
+            )
+        )
+
+    reserved_ids = {
+        "draft-goal",
+        "draft-constraints",
+        *represented_note_ids,
+    }
+    for note in notes:
+        if note.label != "behavior" or note.id in reserved_ids:
+            continue
+        acceptance_notes = _connected_notes_with_label(
+            note,
+            canvas,
+            note_by_id,
+            "acceptance",
+        )
+        requirements.append(
+            IntentRequirement(
+                id="",
+                description=note.text.strip(),
+                acceptance_criteria=(
+                    [item.text.strip() for item in acceptance_notes]
+                    or [f"能够观察并验证：{note.text.strip()}"]
+                ),
+                source_ids=[note.id, *(item.id for item in acceptance_notes)],
+            )
+        )
+
+    requirements = [
+        requirement.model_copy(update={"id": f"REQ-{index:02d}"})
+        for index, requirement in enumerate(requirements, start=1)
+    ]
+
+    constraints: list[str] = []
+    generated_constraints = generated_by_id.get("draft-constraints")
+    constraint_note = note_by_id.get("draft-constraints")
+    if constraint_note is not None and constraint_note.label == "constraint":
+        constraints.extend(
+            original.constraints
+            if generated_constraints and constraint_note.text.strip() == generated_constraints.text
+            else _merge_constraint_summary(original.constraints, constraint_note.text)
+        )
+    constraints.extend(
+        note.text.strip()
+        for note in notes
+        if note.label == "constraint" and note.id != "draft-constraints"
+    )
+    if canvas.supplemental_text.strip():
+        constraints.append(f"补充说明：{canvas.supplemental_text.strip()}")
+
+    brief = IntentBrief(
+        title=title,
+        goal=goal,
+        requirements=requirements,
+        constraints=_unique(constraints),
+    )
+    validate_compiled_brief(canvas, brief)
+    return brief
+
+
+def _connected_notes_with_label(
+    note: CanvasNote,
+    canvas: IntentCanvas,
+    note_by_id: dict[str, CanvasNote],
+    label: str,
+) -> list[CanvasNote]:
+    connected: list[CanvasNote] = []
+    for connection in canvas.connections:
+        if note.id not in {connection.source, connection.target}:
+            continue
+        other_id = connection.target if connection.source == note.id else connection.source
+        other_note = note_by_id.get(other_id)
+        if other_note is not None and other_note.label == label:
+            connected.append(other_note)
+    return connected
+
+
+def _canvas_constraint_summary(constraints: list[str]) -> str:
+    visible = [f"• {_shorten(item.strip(), 52)}" for item in constraints[:3]]
+    if len(constraints) > 3:
+        visible.append(f"• 另有 {len(constraints) - 3} 条约束见任务详情")
+    return "\n".join(visible)
+
+
+def _constraint_lines(text: str) -> list[str]:
+    return [
+        line.strip().removeprefix("•").removeprefix("-").strip()
+        for line in text.splitlines()
+        if line.strip()
+    ]
+
+
+def _merge_constraint_summary(original: list[str], text: str) -> list[str]:
+    displayed_originals = {
+        _shorten(item.strip(), 52): item
+        for item in original[:3]
+    }
+    overflow_label = (
+        f"另有 {len(original) - 3} 条约束见任务详情"
+        if len(original) > 3
+        else None
+    )
+    merged: list[str] = []
+    for line in _constraint_lines(text):
+        if line == overflow_label:
+            merged.extend(original[3:])
+        else:
+            merged.append(displayed_originals.get(line, line))
+    return merged
+
+
 def validate_compiled_brief(canvas: IntentCanvas, brief: IntentBrief) -> None:
     if not brief.title.strip() or not brief.goal.strip():
         raise IntentCompileError("IntentBrief 的标题和目标不能为空")
@@ -429,7 +656,10 @@ Choose exactly one tool:
 
 When submitting an IntentBrief, follow the same traceability rules as the intent compiler: preserve
 meaningful constraints, use consecutive requirement IDs, provide observable acceptance criteria,
-and only cite source IDs present in the input. Return concise Chinese text for Chinese input.
+and only cite source IDs present in the input. When calling submit_plan for a substantial task,
+group the work into 3 to 5 concise, high-level requirements suitable for a visual overview; keep
+lower-level implementation and verification detail in acceptance criteria. Return concise Chinese
+text for Chinese input.
 """
 
 
@@ -446,7 +676,9 @@ Choose exactly one tool:
 
 When submitting an IntentBrief, preserve meaningful constraints, use consecutive requirement IDs,
 provide observable acceptance criteria, and only cite source IDs present in the input. Never claim
-to have changed files or run commands.
+to have changed files or run commands. For a substantial plan, group the work into 3 to 5 concise,
+high-level requirements suitable for a visual overview. Keep implementation and verification detail
+inside acceptance criteria instead of creating many tiny requirements.
 """
 
 

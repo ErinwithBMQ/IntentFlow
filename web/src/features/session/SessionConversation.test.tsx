@@ -46,7 +46,19 @@ const taskDraft: TaskDraftSnapshot = {
   version: 2,
   status: "proposed",
   source_message_id: "message-user-1",
-  canvas: null,
+  parent_id: null,
+  canvas: {
+    notes: [
+      {
+        id: "draft-goal",
+        text: intent.goal,
+        label: "idea",
+        position: { x: 80, y: 120 },
+      },
+    ],
+    connections: [],
+    supplemental_text: "",
+  },
   intent,
   created_at: "2026-08-31T00:00:00Z",
 };
@@ -74,6 +86,7 @@ describe("SessionConversation", () => {
         selectedRunDetail={null}
         responding
         onSelectRun={() => undefined}
+        onPreviewTaskDraft={() => undefined}
       />,
     );
 
@@ -95,12 +108,14 @@ describe("SessionConversation", () => {
         selectedRunDetail={null}
         responding={false}
         onSelectRun={() => undefined}
+        onPreviewTaskDraft={() => undefined}
       />,
     );
 
     expect(html).toContain('<details class="session-intent-brief">');
     expect(html).not.toContain('<details class="session-intent-brief" open="">');
     expect(html).toContain("查看任务草案 v2 · 1 项");
+    expect(html).toContain("在 Canvas 中预览");
     expect(html).toContain("删除副标题文本");
     expect(html).not.toContain("REQ-01");
   });

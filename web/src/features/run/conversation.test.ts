@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RunEvent } from "../../services/api";
-import { buildConversationActivities } from "./conversation";
+import { buildConversationActivities, buildRunLogEntries } from "./conversation";
 
 function event(values: Partial<RunEvent> & Pick<RunEvent, "sequence" | "kind">): RunEvent {
   return {
@@ -185,5 +185,118 @@ describe("buildConversationActivities", () => {
       "verifying",
     ]);
     expect(activities[2].status).toBe("running");
+  });
+});
+
+describe("buildRunLogEntries", () => {
+  it("merges a model decision and tool lifecycle into one readable operation", () => {
+    const entries = buildRunLogEntries([
+      event({ sequence: 1, kind: "run_started", phase: "planning", action: "开始任务" }),
+      event({ sequence: 2, kind: "model_turn", phase: "planning", action: "查看文件结构" }),
+      event({
+        sequence: 3,
+        kind: "tool_started",
+        tool_name: "list_files",
+        target: ".",
+        action: "查看文件结构",
+      }),
+      event({
+        sequence: 4,
+        kind: "tool_finished",
+        tool_name: "list_files",
+        target: ".",
+        status: "succeeded",
+        action: "Listed 10 entries",
+      }),
+      event({ sequence: 5, kind: "run_finished", phase: "finished", status: "succeeded", action: "任务完成" }),
+    ]);
+
+    expect(entries).toHaveLength(3);
+    expect(entries[1]).toMatchObject({
+      sequenceStart: 2,
+      sequenceEnd: 4,
+      label: "工具操作",
+      action: "查看文件结构",
+      result: "Listed 10 entries",
+      status: "succeeded",
+    });
+  });
+
+  it("keeps unfinished thinking and tool operations visible", () => {
+    expect(buildRunLogEntries([
+      event({ sequence: 1, kind: "model_turn", phase: "planning", action: "分析下一步" }),
+    ])).toEqual([
+      expect.objectContaining({ label: "Agent 思考", action: "分析下一步" }),
+    ]);
+
+    expect(buildRunLogEntries([
+      event({
+        sequence: 1,
+        kind: "tool_started",
+        tool_name: "read_file",
+        target: "src/main.ts",
+        action: "读取入口文件",
+      }),
+    ])).toEqual([
+      expect.objectContaining({
+        label: "工具操作",
+        action: "读取入口文件",
+        status: "running",
+      }),
+    ]);
+  });
+
+  it("merges approval state changes without hiding the following edit", () => {
+    const entries = buildRunLogEntries([
+      event({
+        sequence: 0,
+        kind: "model_turn",
+        phase: "planning",
+        action: "准备修改入口文件",
+      }),
+      event({
+        sequence: 1,
+        kind: "approval_required",
+        action: "等待批准修改 src/main.ts",
+        approval_id: "approval-1",
+        target: "src/main.ts",
+      }),
+      event({
+        sequence: 2,
+        kind: "approval_resolved",
+        status: "succeeded",
+        action: "已批准修改 src/main.ts",
+        approval_id: "approval-1",
+        target: "src/main.ts",
+      }),
+      event({
+        sequence: 3,
+        kind: "tool_started",
+        tool_name: "apply_patch",
+        action: "修改入口文件",
+        target: "src/main.ts",
+      }),
+      event({
+        sequence: 4,
+        kind: "tool_finished",
+        tool_name: "apply_patch",
+        status: "succeeded",
+        action: "Updated src/main.ts",
+        target: "src/main.ts",
+      }),
+    ]);
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      label: "修改审批",
+      action: "等待批准修改 src/main.ts",
+      result: "已批准修改 src/main.ts",
+      status: "succeeded",
+    });
+    expect(entries[1]).toMatchObject({
+      label: "工具操作",
+      action: "修改入口文件",
+      result: "Updated src/main.ts",
+    });
   });
 });

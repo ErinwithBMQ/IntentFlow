@@ -189,6 +189,8 @@ export function App() {
   const [sessionMessages, setSessionMessages] = useState<ConversationMessage[]>([]);
   const [sessionRuns, setSessionRuns] = useState<RunSnapshot[]>([]);
   const [taskDrafts, setTaskDrafts] = useState<TaskDraftSnapshot[]>([]);
+  const [canvasProposal, setCanvasProposal] = useState<TaskDraftSnapshot | null>(null);
+  const [adoptedTaskDraft, setAdoptedTaskDraft] = useState<TaskDraftSnapshot | null>(null);
   const [messageDraft, setMessageDraft] = useState("");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("ask");
   const [attachCanvas, setAttachCanvas] = useState(false);
@@ -323,8 +325,8 @@ export function App() {
   );
 
   const callbacks = useMemo(
-    () => ({ onChange: updateNote, onRemove: removeNote }),
-    [removeNote, updateNote],
+    () => ({ editable: canvasProposal === null, onChange: updateNote, onRemove: removeNote }),
+    [canvasProposal, removeNote, updateNote],
   );
 
   const onConnect = useCallback(
@@ -353,6 +355,7 @@ export function App() {
     setNodes(DEFAULT_CANVAS_NODES.map((node) => ({ ...node, data: { ...node.data } })));
     setEdges(DEFAULT_CANVAS_EDGES.map((edge) => ({ ...edge })));
     setSupplementalText("可以在对话发送时选择附加当前 Canvas。");
+    setAdoptedTaskDraft(null);
   }
 
   function clearCanvas() {
@@ -363,6 +366,27 @@ export function App() {
     setNodes([]);
     setEdges([]);
     setSupplementalText("");
+    setAdoptedTaskDraft(null);
+  }
+
+  function previewTaskDraft(draft: TaskDraftSnapshot) {
+    if (!draft.canvas) return;
+    setCanvasProposal(draft);
+    setWorkspaceTab("canvas");
+  }
+
+  function adoptCanvasProposal() {
+    if (!canvasProposal?.canvas) return;
+    const confirmed = window.confirm(
+      `采用任务草案 v${canvasProposal.version} 并替换当前 Canvas 吗？`,
+    );
+    if (!confirmed) return;
+    const proposal = fromIntentCanvas(canvasProposal.canvas);
+    setNodes(proposal.nodes);
+    setEdges(proposal.edges);
+    setSupplementalText(proposal.supplementalText);
+    setAdoptedTaskDraft(canvasProposal);
+    setCanvasProposal(null);
   }
 
   function clearRunReview() {
@@ -389,6 +413,8 @@ export function App() {
     setSessionMessages([]);
     setSessionRuns([]);
     setTaskDrafts([]);
+    setCanvasProposal(null);
+    setAdoptedTaskDraft(null);
     setCanvasStorageSessionId(null);
     setRun(null);
     setRunBrief(null);
@@ -624,6 +650,8 @@ export function App() {
     clearRunReview();
     setRun(null);
     setRunBrief(null);
+    setCanvasProposal(null);
+    setAdoptedTaskDraft(null);
     setCanvasStorageSessionId(null);
     setActiveSessionId(sessionId);
     if (projectId) localStorage.setItem(`${ACTIVE_SESSION_KEY}.${projectId}`, sessionId);
@@ -655,6 +683,8 @@ export function App() {
       setSessionMessages([]);
       setSessionRuns([]);
       setTaskDrafts([]);
+      setCanvasProposal(null);
+      setAdoptedTaskDraft(null);
       setMessageDraft("");
       await loadSessionIntoView(created.id, project.id);
     } catch (error) {
@@ -690,6 +720,8 @@ export function App() {
       setSessionMessages([]);
       setSessionRuns([]);
       setTaskDrafts([]);
+      setCanvasProposal(null);
+      setAdoptedTaskDraft(null);
       setRun(null);
       setRunBrief(null);
       await loadSessionIntoView(remainingSessions[0].id, project.id);
@@ -700,9 +732,16 @@ export function App() {
     }
   }
 
-  async function handleSendMessage() {
-    if (!activeSessionId || !messageDraft.trim()) return;
-    const content = messageDraft.trim();
+  async function handleSendMessage(confirmedTaskDraft: TaskDraftSnapshot | null = null) {
+    const content = confirmedTaskDraft
+      ? `确认并执行任务草案 v${confirmedTaskDraft.version}：${confirmedTaskDraft.intent.title}`
+      : messageDraft.trim();
+    if (!activeSessionId || !content) return;
+    const submittedCanvas = confirmedTaskDraft
+      ? toIntentCanvas(nodes, edges, supplementalText)
+      : attachCanvas
+        ? toIntentCanvas(nodes, edges, supplementalText)
+        : null;
     const optimisticMessageId = `pending-${Date.now()}`;
     const optimisticMessage: ConversationMessage = {
       id: optimisticMessageId,
@@ -710,7 +749,7 @@ export function App() {
       role: "user",
       mode: "agent",
       content,
-      canvas_snapshot_id: attachCanvas ? "pending" : null,
+      canvas_snapshot_id: submittedCanvas ? "pending" : null,
       task_draft_id: null,
       run_id: null,
       intent: null,
@@ -718,7 +757,7 @@ export function App() {
       sequence: (sessionMessages.at(-1)?.sequence ?? 0) + 1,
     };
     setSessionMessages((current) => [...current, optimisticMessage]);
-    setMessageDraft("");
+    if (!confirmedTaskDraft) setMessageDraft("");
     setMessageSending(true);
     setMessageError("");
     try {
@@ -726,7 +765,8 @@ export function App() {
         activeSessionId,
         content,
         approvalMode,
-        attachCanvas ? toIntentCanvas(nodes, edges, supplementalText) : null,
+        submittedCanvas,
+        confirmedTaskDraft?.id ?? null,
       );
       setSessionMessages((current) => [
         ...current.filter((message) => message.id !== optimisticMessageId),
@@ -737,6 +777,7 @@ export function App() {
       if (createdTaskDraft) {
         setTaskDrafts((current) => [...current, createdTaskDraft]);
       }
+      if (confirmedTaskDraft) setAdoptedTaskDraft(null);
       if (project) setSessions(await listSessions(project.id));
 
       const createdRun = response.run;
@@ -1153,6 +1194,9 @@ export function App() {
       showIntentContext={!run.session_id}
     />
   ) : null;
+  const previewCanvas = canvasProposal?.canvas
+    ? fromIntentCanvas(canvasProposal.canvas)
+    : null;
 
   return (
     <main className="workspace-shell">
@@ -1252,38 +1296,68 @@ export function App() {
           <div className="workspace-view">
             {workspaceTab === "canvas" ? (
               <div className="canvas-workspace">
-                <div className="canvas-toolbar">
-                  <button type="button" onClick={addNote}><Plus size={13} />添加便签</button>
-                  <button type="button" onClick={restoreExample}><RotateCcw size={13} />恢复示例</button>
-                  <button type="button" onClick={clearCanvas}><Trash2 size={13} />清空</button>
-                  <label>
-                    <span><Link2 size={12} />连线文字</span>
-                    <input
-                      value={connectionLabel}
-                      placeholder="例如：然后、参考"
-                      onChange={(event) => setConnectionLabel(event.target.value)}
-                    />
-                  </label>
-                  <label className="canvas-toolbar__supplement">
-                    <span>补充说明</span>
-                    <input
-                      value={supplementalText}
-                      placeholder="还有一些不好放进便签的话……"
-                      onChange={(event) => setSupplementalText(event.target.value)}
-                    />
-                  </label>
-                </div>
+                {canvasProposal ? (
+                  <div className="canvas-toolbar canvas-toolbar--proposal">
+                    <span>正在预览任务草案 v{canvasProposal.version} 的 Canvas 摘要</span>
+                    <div className="canvas-toolbar__actions">
+                      <button type="button" onClick={adoptCanvasProposal}>采用到 Canvas</button>
+                      <button type="button" onClick={() => setCanvasProposal(null)}>退出预览</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="canvas-toolbar">
+                    <button type="button" onClick={addNote}><Plus size={13} />添加便签</button>
+                    <button type="button" onClick={restoreExample}><RotateCcw size={13} />恢复示例</button>
+                    <button type="button" onClick={clearCanvas}><Trash2 size={13} />清空</button>
+                    {adoptedTaskDraft && (
+                      <button
+                        className="canvas-confirm-button"
+                        type="button"
+                        disabled={messageSending || Boolean(pendingReviewRun)}
+                        onClick={() => void handleSendMessage(adoptedTaskDraft)}
+                      >
+                        确认并执行 v{adoptedTaskDraft.version}
+                      </button>
+                    )}
+                    <label>
+                      <span><Link2 size={12} />连线文字</span>
+                      <input
+                        value={connectionLabel}
+                        placeholder="例如：然后、参考"
+                        onChange={(event) => setConnectionLabel(event.target.value)}
+                      />
+                    </label>
+                    <label className="canvas-toolbar__supplement">
+                      <span>补充说明</span>
+                      <input
+                        value={supplementalText}
+                        placeholder="还有一些不好放进便签的话……"
+                        onChange={(event) => setSupplementalText(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                )}
                 <div className="canvas-panel">
                   <div className="canvas-header">
-                    <span>Intent Canvas</span>
-                    <span>{nodes.length} 张便签 · {edges.length} 条关系 · 已自动保存</span>
+                    <span>{canvasProposal ? "Agent 规划摘要" : "Intent Canvas"}</span>
+                    <span>
+                      {previewCanvas?.nodes.length ?? nodes.length} 张便签 · {previewCanvas?.edges.length ?? edges.length} 条关系
+                      {canvasProposal ? " · 详细需求保留在任务草案" : " · 已自动保存"}
+                    </span>
                   </div>
                   <NoteNodeProvider callbacks={callbacks}>
                     <ReactFlow<NoteNodeType>
-                      fitView nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+                      key={canvasProposal?.id ?? canvasStorageSessionId ?? "canvas"}
+                      fitView
+                      nodes={previewCanvas?.nodes ?? nodes}
+                      edges={previewCanvas?.edges ?? edges}
+                      nodeTypes={nodeTypes}
                       minZoom={0.55} maxZoom={1.45}
-                      onConnect={onConnect} onNodesChange={onNodesChange}
-                      onEdgesChange={onEdgesChange}
+                      nodesDraggable={!canvasProposal}
+                      nodesConnectable={!canvasProposal}
+                      onConnect={canvasProposal ? undefined : onConnect}
+                      onNodesChange={canvasProposal ? undefined : onNodesChange}
+                      onEdgesChange={canvasProposal ? undefined : onEdgesChange}
                     >
                       <Background
                         color="#d6d5cf" gap={20} size={1}
@@ -1401,6 +1475,7 @@ export function App() {
                 selectedRunDetail={selectedRunDetail}
                 responding={messageSending}
                 onSelectRun={(selectedRun) => void selectSessionRun(selectedRun)}
+                onPreviewTaskDraft={previewTaskDraft}
               />
               {run && !run.session_id && selectedRunDetail}
             </div>

@@ -6,7 +6,13 @@ from httpx import ASGITransport, AsyncClient
 
 import app.main as main_module
 from app.agent.models import IntentBrief, IntentRequirement
-from app.intent.compiler import AIIntentCompiler, IntentCompileError, compile_canvas
+from app.intent.compiler import (
+    AIIntentCompiler,
+    IntentCompileError,
+    apply_canvas_summary_to_brief,
+    canvas_from_intent_brief,
+    compile_canvas,
+)
 from app.intent.models import CanvasConnection, CanvasNote, CanvasPosition, IntentCanvas
 from app.main import app
 
@@ -92,6 +98,90 @@ def test_compiler_keeps_requirements_traceable_to_canvas_notes() -> None:
     assert brief.requirements[0].source_ids == ["behavior-1", "acceptance-1"]
     assert brief.requirements[0].acceptance_criteria == ["空白输入不会创建任务"]
     assert brief.constraints == ["保持当前页面风格", "补充说明：优先保证演示稳定"]
+
+
+def test_intent_brief_becomes_a_compact_canvas_summary() -> None:
+    brief = IntentBrief(
+        title="优化代码编辑器",
+        goal="让代码编辑体验更接近常见 IDE",
+        requirements=[
+            IntentRequirement(
+                id="REQ-01",
+                description="支持自动保存",
+                acceptance_criteria=["停止输入后保存当前文件"],
+            )
+        ],
+        constraints=["不能覆盖外部修改"],
+    )
+
+    canvas = canvas_from_intent_brief(brief)
+
+    assert canvas.notes[0].text == brief.goal
+    assert {note.label for note in canvas.notes} == {"idea", "behavior", "constraint"}
+    assert len(canvas.notes) == 3
+    assert any(edge.label == "拆分为" for edge in canvas.connections)
+    assert any(edge.label == "受限于" for edge in canvas.connections)
+
+
+def test_canvas_summary_keeps_hidden_details_when_confirmed() -> None:
+    brief = IntentBrief(
+        title="整理大型计划",
+        goal="让复杂任务保持清晰且可以执行",
+        requirements=[
+            IntentRequirement(
+                id=f"REQ-{index:02d}",
+                description=f"实现模块 {index}",
+                acceptance_criteria=[f"模块 {index} 的详细验收条件"],
+            )
+            for index in range(1, 7)
+        ],
+        constraints=["保持兼容", "不能丢失验收条件"],
+    )
+    canvas = canvas_from_intent_brief(brief)
+    requirement_note = next(note for note in canvas.notes if note.id == "draft-requirement-1")
+    requirement_note.text = "优先实现核心模块"
+
+    confirmed = apply_canvas_summary_to_brief(brief, canvas)
+
+    assert len(canvas.notes) == 7
+    assert len([note for note in canvas.notes if note.label == "behavior"]) == 5
+    assert not any(note.label == "acceptance" for note in canvas.notes)
+    assert confirmed.requirements[0].description == "优先实现核心模块"
+    assert confirmed.requirements[0].acceptance_criteria == ["模块 1 的详细验收条件"]
+    assert confirmed.requirements[-1].description == "实现模块 6"
+    assert confirmed.requirements[-1].acceptance_criteria == ["模块 6 的详细验收条件"]
+    assert confirmed.constraints == brief.constraints
+
+
+def test_canvas_summary_preserves_unedited_long_constraints_during_other_edits() -> None:
+    long_constraint = (
+        "必须保留这条很长的约束内容，不能因为画布为了便于阅读而截短文字后就丢失原始细节"
+        * 2
+    )
+    brief = IntentBrief(
+        title="约束保留",
+        goal="保持任务细节",
+        requirements=[
+            IntentRequirement(
+                id="REQ-01",
+                description="完成主要改动",
+                acceptance_criteria=["测试通过"],
+            )
+        ],
+        constraints=[long_constraint, "保留兼容性", "不增加依赖", "第四条隐藏约束"],
+    )
+    canvas = canvas_from_intent_brief(brief)
+    constraint_note = next(note for note in canvas.notes if note.id == "draft-constraints")
+    constraint_note.text = constraint_note.text.replace("保留兼容性", "兼容现有数据")
+
+    confirmed = apply_canvas_summary_to_brief(brief, canvas)
+
+    assert confirmed.constraints == [
+        long_constraint,
+        "兼容现有数据",
+        "不增加依赖",
+        "第四条隐藏约束",
+    ]
 
 
 async def test_ai_compiler_uses_function_call_and_accepts_unconnected_notes() -> None:

@@ -21,6 +21,8 @@ from app.intent import (
     CanvasCompileRequest,
     CanvasCompileResponse,
     IntentCompileError,
+    apply_canvas_summary_to_brief,
+    canvas_from_intent_brief,
     compile_canvas,
     validate_canvas_input,
 )
@@ -144,6 +146,7 @@ class SendSessionMessageRequest(BaseModel):
     approval_mode: ApprovalMode | None = None
     attach_canvas: bool = False
     canvas: IntentCanvas | None = None
+    task_draft_id: str | None = None
 
 
 class SendSessionMessageResponse(BaseModel):
@@ -335,6 +338,15 @@ async def _process_session_message(
         raise HTTPException(status_code=422, detail="消息内容不能为空")
     if request.attach_canvas and request.canvas is None:
         raise HTTPException(status_code=422, detail="选择附加 Canvas 时必须提供当前画布")
+    parent_task_draft = None
+    if request.task_draft_id is not None:
+        parent_task_draft = session_store.get_task_draft(request.task_draft_id)
+        if parent_task_draft is None or parent_task_draft.session_id != session_id:
+            raise HTTPException(status_code=404, detail="任务草案不存在")
+        if parent_task_draft.status != "proposed":
+            raise HTTPException(status_code=409, detail="只有待确认的任务草案可以继续执行")
+        if request.canvas is None:
+            raise HTTPException(status_code=422, detail="确认任务草案时必须提交当前 Canvas")
     approval_mode = request.approval_mode or session.approval_mode
     if request.approval_mode is not None and request.approval_mode != session.approval_mode:
         session_store.set_approval_mode(session_id, request.approval_mode)
@@ -388,8 +400,11 @@ async def _process_session_message(
         history.messages[:-1],
     )
     try:
-        compiler = create_ai_intent_compiler()
-        if request.mode == "agent":
+        if parent_task_draft is not None and request.canvas is not None:
+            brief = apply_canvas_summary_to_brief(parent_task_draft.intent, request.canvas)
+            decision = None
+        elif request.mode == "agent":
+            compiler = create_ai_intent_compiler()
             decision = await compiler.compile_agent_request(
                 compilation_canvas,
                 user_message.id,
@@ -409,6 +424,7 @@ async def _process_session_message(
                 )
             brief = decision.brief
         else:
+            compiler = create_ai_intent_compiler()
             decision = await compiler.compile_plan_request(
                 compilation_canvas,
                 user_message.id,
@@ -432,14 +448,17 @@ async def _process_session_message(
     except IntentCompileError as error:
         raise HTTPException(status_code=502, detail=f"AI 意图整理失败：{error}") from error
 
-    if request.mode == "plan" or decision.action == "propose":
+    if parent_task_draft is None and (
+        request.mode == "plan" or (decision is not None and decision.action == "propose")
+    ):
         task_draft = session_store.add_task_draft(
             session_id,
             user_message.id,
             brief,
             status="proposed",
-            canvas=canvas_snapshot.canvas if canvas_snapshot else None,
+            canvas=canvas_from_intent_brief(brief),
         )
+        session_store.attach_task_draft(user_message.id, task_draft.id)
         assistant_message = session_store.add_message(
             session_id,
             "assistant",
@@ -449,7 +468,7 @@ async def _process_session_message(
             intent=brief,
         )
         return SendSessionMessageResponse(
-            user_message=user_message,
+            user_message=user_message.model_copy(update={"task_draft_id": task_draft.id}),
             assistant_message=assistant_message,
             task_draft=task_draft,
         )
@@ -479,8 +498,12 @@ async def _process_session_message(
         user_message.id,
         brief,
         status="confirmed",
-        canvas=canvas_snapshot.canvas if canvas_snapshot else None,
+        canvas=request.canvas if parent_task_draft is not None else (
+            canvas_snapshot.canvas if canvas_snapshot else None
+        ),
+        parent_id=parent_task_draft.id if parent_task_draft else None,
     )
+    session_store.attach_task_draft(user_message.id, task_draft.id)
     try:
         run = run_manager.start(
             brief,
@@ -508,7 +531,9 @@ async def _process_session_message(
         intent=brief,
     )
     return SendSessionMessageResponse(
-        user_message=user_message.model_copy(update={"run_id": run.id}),
+        user_message=user_message.model_copy(
+            update={"run_id": run.id, "task_draft_id": task_draft.id}
+        ),
         assistant_message=assistant_message,
         run=run,
         task_draft=task_draft,

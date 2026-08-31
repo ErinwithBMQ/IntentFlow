@@ -66,6 +66,7 @@ export type TaskDraftSnapshot = {
   version: number;
   status: "proposed" | "confirmed";
   source_message_id: string;
+  parent_id: string | null;
   canvas: IntentCanvas | null;
   intent: IntentBrief;
   created_at: string;
@@ -389,12 +390,14 @@ export function sendSessionMessage(
   content: string,
   approvalMode: ApprovalMode,
   canvas: IntentCanvas | null,
+  taskDraftId: string | null = null,
 ): Promise<SendSessionMessageResponse> {
   return postJson<SendSessionMessageResponse>(`/api/sessions/${sessionId}/messages`, {
     content,
     approval_mode: approvalMode,
     attach_canvas: canvas !== null,
     canvas,
+    ...(taskDraftId ? { task_draft_id: taskDraftId } : {}),
   });
 }
 

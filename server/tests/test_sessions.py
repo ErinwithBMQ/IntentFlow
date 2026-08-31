@@ -645,6 +645,8 @@ async def test_plan_message_returns_structured_intent_without_a_run(tmp_path, mo
     assert payload["run"] is None
     assert payload["task_draft"]["status"] == "proposed"
     assert payload["task_draft"]["version"] == 1
+    assert payload["task_draft"]["canvas"]["notes"][0]["text"] == "允许筛选未完成任务"
+    assert payload["task_draft"]["canvas"]["connections"][0]["label"] == "拆分为"
     assert payload["assistant_message"]["task_draft_id"] == payload["task_draft"]["id"]
     assert payload["assistant_message"]["intent"]["title"] == "增加筛选"
     assert payload["assistant_message"]["content"] == (
@@ -1000,3 +1002,70 @@ async def test_agent_message_links_and_persists_its_run(tmp_path, monkeypatch) -
     assert restored.session.approval_mode == "auto"
     assert restored.runs[0].metrics.model_turns == 2
     assert len(restored.runs[0].history) == 4
+
+
+async def test_confirmed_canvas_creates_a_new_draft_version_and_run(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "examples" / "todo-demo"
+    project.mkdir(parents=True)
+    (project / "source.txt").write_text("ready", encoding="utf-8")
+    database = tmp_path / "intentflow.db"
+    store = make_store(database)
+    registry = ProjectRegistry(database, tmp_path)
+    manager = RunManager(
+        tmp_path,
+        model_client_factory=agent_model_factory,
+        command_factory=lambda _workspace: {
+            "test": (sys.executable, "-c", "print('ok')"),
+        },
+        snapshot_sink=store.save_run,
+        project_resolver=registry.get,
+    )
+    monkeypatch.setattr(main_module, "repository_root", tmp_path)
+    monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(main_module, "project_registry", registry)
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    session = store.create_session("todo-demo")
+    source_message = store.add_message(session.id, "user", "plan", "先规划筛选功能")
+    proposal = store.add_task_draft(
+        session.id,
+        source_message.id,
+        sample_brief(),
+        status="proposed",
+    )
+    confirmed_canvas = main_module.canvas_from_intent_brief(sample_brief()).model_dump()
+    confirmed_canvas["notes"][1]["text"] = "确认后的筛选需求"
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={
+                "content": "确认并执行任务草案",
+                "approval_mode": "auto",
+                "attach_canvas": True,
+                "canvas": confirmed_canvas,
+                "task_draft_id": proposal.id,
+            },
+        )
+        run_id = response.json()["run"]["id"]
+        for _ in range(100):
+            if manager.get(run_id).status != "running":
+                break
+            await asyncio.sleep(0.01)
+
+    payload = response.json()
+    restored = store.get_detail(session.id)
+    assert response.status_code == 201
+    assert payload["task_draft"]["version"] == 2
+    assert payload["task_draft"]["status"] == "confirmed"
+    assert payload["task_draft"]["parent_id"] == proposal.id
+    assert payload["run"]["task_draft_id"] == payload["task_draft"]["id"]
+    assert payload["run"]["intent"]["requirements"][0]["description"] == "确认后的筛选需求"
+    assert payload["run"]["intent"]["requirements"][0]["acceptance_criteria"] == ["筛选结果正确"]
+    assert restored is not None
+    assert len(restored.task_drafts) == 2
+    assert restored.task_drafts[-1].canvas is not None
+    assert any(
+        note.text == "确认后的筛选需求"
+        for note in restored.task_drafts[-1].canvas.notes
+    )

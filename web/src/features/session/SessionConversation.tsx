@@ -19,6 +19,7 @@ type SessionConversationProps = {
   selectedRunDetail: ReactNode;
   responding: boolean;
   onSelectRun: (run: RunSnapshot) => void;
+  onPreviewTaskDraft: (draft: TaskDraftSnapshot) => void;
 };
 
 const runStatusLabels: Record<RunSnapshot["status"], string> = {
@@ -36,6 +37,7 @@ export function SessionConversation({
   selectedRunDetail,
   responding,
   onSelectRun,
+  onPreviewTaskDraft,
 }: SessionConversationProps) {
   const runById = new Map(runs.map((run) => [run.id, run]));
   const taskDraftById = new Map(taskDrafts.map((draft) => [draft.id, draft]));
@@ -97,6 +99,15 @@ export function SessionConversation({
                   <small className="session-message__attachment">
                     <Paperclip size={11} />已附加 Canvas 快照
                   </small>
+                )}
+                {linkedTaskDraft?.canvas && linkedTaskDraft.status === "proposed" && (
+                  <button
+                    className="session-run-link"
+                    type="button"
+                    onClick={() => onPreviewTaskDraft(linkedTaskDraft)}
+                  >
+                    <Paperclip size={12} />在 Canvas 中预览
+                  </button>
                 )}
                 {linkedRun && linkedRun.id !== selectedRunId && (
                   <button

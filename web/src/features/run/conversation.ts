@@ -37,6 +37,119 @@ export type ConversationActivity = {
   actions: ConversationAction[];
 };
 
+export type RunLogEntry = {
+  id: string;
+  sequenceStart: number;
+  sequenceEnd: number;
+  label: string;
+  status: RunEvent["status"];
+  action: string;
+  result: string;
+  toolName: string | null;
+  target: string | null;
+};
+
+export function buildRunLogEntries(events: RunEvent[]): RunLogEntry[] {
+  const entries: RunLogEntry[] = [];
+  let pendingTurn: RunEvent | null = null;
+
+  const flushPendingTurn = () => {
+    if (!pendingTurn) return;
+    entries.push(toRunLogEntry(pendingTurn, "Agent 思考"));
+    pendingTurn = null;
+  };
+
+  for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
+    if (event.kind === "model_turn") {
+      flushPendingTurn();
+      pendingTurn = event;
+      continue;
+    }
+
+    if (event.kind === "tool_started") {
+      const sequenceStart = pendingTurn?.sequence ?? event.sequence;
+      pendingTurn = null;
+      entries.push({
+        ...toRunLogEntry(event, "工具操作"),
+        sequenceStart,
+      });
+      continue;
+    }
+
+    if (event.kind === "tool_finished") {
+      const turn = pendingTurn;
+      pendingTurn = null;
+      const started = [...entries].reverse().find((entry) => (
+        entry.label === "工具操作"
+        && entry.status === "running"
+        && entry.toolName === event.tool_name
+      ));
+      if (started) {
+        started.sequenceEnd = event.sequence;
+        started.status = event.status;
+        started.result = event.action === started.action ? "" : event.action;
+        started.target = event.target ?? started.target;
+      } else {
+        entries.push({
+          ...toRunLogEntry(event, "工具操作"),
+          sequenceStart: turn?.sequence ?? event.sequence,
+          action: turn?.action || event.action,
+          result: turn && turn.action !== event.action ? event.action : "",
+        });
+      }
+      continue;
+    }
+
+    if (event.kind === "approval_required") {
+      pendingTurn = null;
+      entries.push(toRunLogEntry(event, "修改审批"));
+      continue;
+    }
+
+    if (event.kind === "approval_resolved") {
+      const requested = [...entries].reverse().find((entry) => (
+        entry.label === "修改审批"
+        && entry.status === "running"
+        && entry.id === `approval-${event.approval_id ?? event.sequence}`
+      ));
+      if (requested) {
+        requested.sequenceEnd = event.sequence;
+        requested.status = event.status;
+        requested.result = event.action === requested.action ? "" : event.action;
+        requested.target = event.target ?? requested.target;
+      } else {
+        entries.push(toRunLogEntry(event, "修改审批"));
+      }
+      continue;
+    }
+
+    flushPendingTurn();
+    entries.push(toRunLogEntry(
+      event,
+      event.kind === "run_started" ? "运行开始" : "运行结束",
+    ));
+  }
+
+  flushPendingTurn();
+  return entries;
+}
+
+function toRunLogEntry(event: RunEvent, label: string): RunLogEntry {
+  return {
+    id: event.kind.startsWith("approval_")
+      ? `approval-${event.approval_id ?? event.sequence}`
+      : `event-${event.sequence}`,
+    sequenceStart: event.sequence,
+    sequenceEnd: event.sequence,
+    label,
+    status: event.status,
+    action: event.action,
+    result: "",
+    toolName: event.tool_name,
+    target: event.target,
+  };
+}
+
 export function buildConversationActivities(events: RunEvent[]): ConversationActivity[] {
   const activities: ConversationActivity[] = [];
   let pendingTurn: RunEvent | null = null;
