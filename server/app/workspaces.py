@@ -3,6 +3,7 @@ from __future__ import annotations
 import difflib
 import shutil
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -34,6 +35,7 @@ DEFAULT_MAX_DIFF_FILES = 2_000
 
 WorkspaceErrorKind = Literal[
     "binary",
+    "conflict",
     "invalid_path",
     "invalid_utf8",
     "not_file",
@@ -187,6 +189,37 @@ class WorkspaceService:
             size=target.stat().st_size,
             language=self._language_for(target),
         )
+
+    def update_text(
+        self,
+        root: Path,
+        relative_path: str,
+        content: str,
+        expected_content: str,
+        *,
+        mutation_writer: Callable[[str, Path, str | None], None] | None = None,
+    ) -> WorkspaceFile:
+        target, normalized_path = self._resolve_path(root, relative_path)
+        if not target.is_file():
+            raise WorkspaceAccessError("not_file", "目标不是文件")
+        current_content = self._read_text_file(target)
+        if current_content != expected_content:
+            raise WorkspaceAccessError("conflict", "文件已在编辑期间发生变化，请重新载入后再保存")
+        if len(content.encode("utf-8")) > self.max_text_bytes:
+            raise WorkspaceAccessError("too_large", "文件超过可编辑大小限制")
+
+        if mutation_writer is not None:
+            mutation_writer(normalized_path, target, content)
+        else:
+            temporary = target.with_name(f".{target.name}.intentflow-{uuid4().hex}.tmp")
+            try:
+                temporary.write_text(content, encoding="utf-8")
+                temporary.replace(target)
+            except OSError as error:
+                temporary.unlink(missing_ok=True)
+                raise WorkspaceAccessError("not_file", "文件保存失败") from error
+
+        return self.read_text(root, normalized_path)
 
     def changes(self, baseline_root: Path, workspace_root: Path) -> ChangeSummary:
         baseline_files = self._collect_files(baseline_root)

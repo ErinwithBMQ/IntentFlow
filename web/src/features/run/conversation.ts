@@ -24,6 +24,7 @@ export const verificationStatusText = {
   command_start_failed: "命令无法启动",
   failed: "验证失败",
   passed: "验证通过",
+  stale: "验证已失效",
 } as const;
 
 export type ConversationActivity = {
@@ -170,6 +171,7 @@ function verificationActionText(event: RunEvent): string {
     command_start_failed: `${command} 验证命令无法启动`,
     failed: `${command} 验证失败`,
     passed: `${command} 验证通过`,
+    stale: `${command} 验证已失效`,
   }[event.verification_status];
 }
 

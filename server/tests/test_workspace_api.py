@@ -5,6 +5,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import app.main as main_module
+from app.agent.models import ContextCheckpoint, RequirementResult, RunReport
+from app.checkpoints import RunCheckpoint
 from app.projects import ProjectRegistry
 from app.runs import RunManager, RunRecord
 from app.workspaces import WorkspaceService
@@ -37,6 +39,48 @@ def prepare_repository(root: Path) -> tuple[RunManager, RunRecord, ProjectRegist
         project_root=project,
     )
     record.status = "completed"
+    manager.records[record.id] = record
+    return manager, record, registry
+
+
+def prepare_direct_repository(root: Path) -> tuple[RunManager, RunRecord, ProjectRegistry]:
+    project = root / "project"
+    project.mkdir()
+    source = project / "source.js"
+    source.write_text("const value = 'before';\n", encoding="utf-8")
+    registry = ProjectRegistry(root / "runtime-data" / "intentflow.db", root)
+    registered = registry.register(project)
+    checkpoint_root = root / "runtime-data" / "runs" / "run-direct" / "checkpoint"
+    checkpoint = RunCheckpoint(checkpoint_root, project)
+    checkpoint.apply_text_change("source.js", source, "const value = 'agent';\n")
+    manager = RunManager(root, project_resolver=registry.get)
+    record = RunRecord(
+        "run-direct",
+        project,
+        checkpoint.before_root,
+        "runtime-data/runs/run-direct/checkpoint",
+        project_id=registered.id,
+        project_name=registered.name,
+        project_root=project,
+        workspace_mode="direct",
+        checkpoint=checkpoint,
+        context_checkpoint=ContextCheckpoint(verification_results=["test exited with code 0"]),
+    )
+    record.status = "completed"
+    record.report = RunReport(
+        status="completed",
+        summary="Agent edit completed",
+        evidence=["test exited with code 0"],
+        requirement_results=[
+            RequirementResult(
+                requirement_id="REQ-01",
+                status="verified",
+                summary="Updated source",
+                related_files=["source.js"],
+                evidence=["test exited with code 0"],
+            )
+        ],
+    )
     manager.records[record.id] = record
     return manager, record, registry
 
@@ -161,6 +205,96 @@ async def test_workspace_api_rejects_invalid_state_and_paths(tmp_path, monkeypat
     assert traversal.status_code == 400
     assert missing_run.status_code == 404
     assert running_diff.status_code == 409
+
+
+async def test_manual_edit_joins_pending_checkpoint_and_invalidates_verification(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    manager, record, registry = prepare_direct_repository(tmp_path)
+    monkeypatch.setattr(main_module, "repository_root", tmp_path)
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "project_registry", registry)
+    project = registry.get_active()
+    assert project is not None
+    expected_content = (Path(project.root_path) / "source.js").read_bytes().decode("utf-8")
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.put(
+            "/api/project/file",
+            params={"project_id": project.id, "path": "source.js"},
+            json={
+                "content": "const value = 'manual';\n",
+                "expected_content": expected_content,
+                "run_id": record.id,
+            },
+        )
+        undone = await client.post(f"/api/runs/{record.id}/undo")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["file"]["content"].replace("\r\n", "\n") == "const value = 'manual';\n"
+    assert payload["changes"]["changed_files"] == 1
+    assert payload["run"]["report"]["evidence"] == []
+    assert payload["run"]["report"]["requirement_results"][0]["status"] == "implemented"
+    assert payload["run"]["events"][-1]["verification_status"] == "stale"
+    assert undone.status_code == 200
+    assert (Path(project.root_path) / "source.js").read_text(encoding="utf-8") == (
+        "const value = 'before';\n"
+    )
+
+
+async def test_manual_edit_rejects_stale_editor_content(tmp_path, monkeypatch) -> None:
+    manager, record, registry = prepare_direct_repository(tmp_path)
+    monkeypatch.setattr(main_module, "repository_root", tmp_path)
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "project_registry", registry)
+    project = registry.get_active()
+    assert project is not None
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.put(
+            "/api/project/file",
+            params={"project_id": project.id, "path": "source.js"},
+            json={
+                "content": "const value = 'manual';\n",
+                "expected_content": "stale content\n",
+                "run_id": record.id,
+            },
+        )
+
+    assert response.status_code == 409
+    assert "重新载入" in response.json()["detail"]
+    assert (Path(project.root_path) / "source.js").read_text(encoding="utf-8") == (
+        "const value = 'agent';\n"
+    )
+
+
+async def test_manual_edit_requires_pending_run_to_be_explicit(tmp_path, monkeypatch) -> None:
+    manager, _, registry = prepare_direct_repository(tmp_path)
+    monkeypatch.setattr(main_module, "repository_root", tmp_path)
+    monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "project_registry", registry)
+    project = registry.get_active()
+    assert project is not None
+    expected_content = (Path(project.root_path) / "source.js").read_bytes().decode("utf-8")
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.put(
+            "/api/project/file",
+            params={"project_id": project.id, "path": "source.js"},
+            json={
+                "content": "const value = 'manual';\n",
+                "expected_content": expected_content,
+                "run_id": None,
+            },
+        )
+
+    assert response.status_code == 409
+    assert "并入该轮 Run" in response.json()["detail"]
 
 
 async def test_accept_applies_all_changes_and_is_idempotent(tmp_path, monkeypatch) -> None:

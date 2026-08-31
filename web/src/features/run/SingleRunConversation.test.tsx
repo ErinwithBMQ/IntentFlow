@@ -121,6 +121,30 @@ describe("SingleRunConversation review actions", () => {
     expect(html).toContain("未配置验证");
   });
 
+  it("shows that verification became stale after a manual edit", () => {
+    const run = runSnapshot("completed");
+    run.events = [
+      {
+        sequence: 1,
+        kind: "tool_finished",
+        phase: "acting",
+        status: "succeeded",
+        action: "已保存手动编辑：src/main.js",
+        reason: "文件内容已由用户修改，先前验证结果已失效",
+        related_requirement_ids: [],
+        tool_name: "manual_edit",
+        target: "src/main.js",
+        evidence: [],
+        verification_status: "stale",
+      },
+    ];
+
+    const html = renderReview(run);
+
+    expect(html).toContain("验证已失效");
+    expect(html).toContain("已保存手动编辑：src/main.js");
+  });
+
   it("keeps detailed results behind progressive disclosure", () => {
     const run = runSnapshot("completed", ["test exited with code 0"]);
     if (!run.report) throw new Error("Expected a completed report");

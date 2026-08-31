@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.agent.models import IntentBrief
-from app.checkpoints import CheckpointConflictError
+from app.checkpoints import CheckpointConflictError, CheckpointError
 from app.conversation_service import (
     ConversationResponder,
     ConversationResponseError,
@@ -163,6 +163,18 @@ class RunPreviewResponse(BaseModel):
 
 class DirectorySelectionResponse(BaseModel):
     path: str | None = None
+
+
+class UpdateProjectFileRequest(BaseModel):
+    content: str = Field(max_length=1_000_000)
+    expected_content: str = Field(max_length=1_000_000)
+    run_id: str | None = None
+
+
+class UpdateProjectFileResponse(BaseModel):
+    file: WorkspaceFile
+    run: RunSnapshot | None = None
+    changes: ChangeSummary | None = None
 
 
 class ResolveApprovalRequest(BaseModel):
@@ -575,6 +587,63 @@ async def get_project_file(path: str, project_id: str | None = None) -> Workspac
         raise workspace_http_error(error) from error
 
 
+@app.put("/api/project/file", response_model=UpdateProjectFileResponse)
+async def update_project_file(
+    path: str,
+    request: UpdateProjectFileRequest,
+    project_id: str | None = None,
+) -> UpdateProjectFileResponse:
+    project = require_project(project_id)
+    pending_runs = run_manager.pending_review_runs(project.id)
+    if request.run_id is None:
+        if pending_runs:
+            raise HTTPException(
+                status_code=409,
+                detail="当前项目存在待审查的 Agent 修改，请将手动编辑并入该轮 Run",
+            )
+        try:
+            updated = project_workspace_service(project).update_text(
+                Path(project.root_path),
+                path,
+                request.content,
+                request.expected_content,
+            )
+        except WorkspaceAccessError as error:
+            raise workspace_http_error(error) from error
+        return UpdateProjectFileResponse(file=updated)
+
+    try:
+        record = require_run(request.run_id)
+        if record.project_id != project.id:
+            raise HTTPException(status_code=409, detail="运行记录不属于当前项目")
+        other_pending = [item for item in pending_runs if item.id != record.id]
+        if other_pending:
+            raise HTTPException(
+                status_code=409,
+                detail="当前项目存在其他待审查运行，暂不能手动保存",
+            )
+        snapshot, updated = await run_manager.apply_manual_edit(
+            record.id,
+            path,
+            request.content,
+            request.expected_content,
+        )
+        changes = (
+            record.checkpoint.changes(run_workspace_service(record))
+            if record.checkpoint
+            else None
+        )
+        return UpdateProjectFileResponse(file=updated, run=snapshot, changes=changes)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from error
+    except (RunReviewError, CheckpointConflictError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except CheckpointError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except WorkspaceAccessError as error:
+        raise workspace_http_error(error) from error
+
+
 @app.post("/api/intent/compile", response_model=CanvasCompileResponse)
 async def compile_intent(request: CanvasCompileRequest) -> CanvasCompileResponse:
     try:
@@ -903,6 +972,7 @@ def require_finished_run(run_id: str) -> RunRecord:
 def workspace_http_error(error: WorkspaceAccessError) -> HTTPException:
     status_code = {
         "invalid_path": 400,
+        "conflict": 409,
         "not_file": 400,
         "not_found": 404,
         "too_large": 413,

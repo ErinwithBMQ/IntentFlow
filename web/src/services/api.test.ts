@@ -24,6 +24,7 @@ import {
   sendSessionMessage,
   stopRun,
   undoRun,
+  updateProjectFile,
   type IntentCanvas,
 } from "./api";
 
@@ -178,6 +179,33 @@ describe("getHealth", () => {
       2,
       "/api/runs/run-1/undo",
       expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("saves a project file into a pending run", async () => {
+    const updateResponse = {
+      file: { path: "src/main.js", content: "next", size: 4, language: "javascript" },
+      run: { id: "run-1" },
+      changes: { files: [], changed_files: 1, additions: 1, deletions: 1 },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(updateResponse), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateProjectFile("project-1", "src/main.js", "next", "before", "run-1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/project/file?project_id=project-1&path=src%2Fmain.js",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({
+          content: "next",
+          expected_content: "before",
+          run_id: "run-1",
+        }),
+      }),
     );
   });
 

@@ -90,7 +90,7 @@ export function SingleRunConversation({
   ).length ?? 0;
   const latestVerificationStatus = [...run.events]
     .reverse()
-    .find((event) => event.tool_name === "run_command" && event.verification_status)
+    .find((event) => event.verification_status)
     ?.verification_status;
 
   return (

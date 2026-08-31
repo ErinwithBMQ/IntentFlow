@@ -9,6 +9,7 @@ VerificationStatus = Literal[
     "command_start_failed",
     "failed",
     "passed",
+    "stale",
 ]
 
 

@@ -27,11 +27,11 @@ export function ProjectExplorer({
     <aside className="file-panel">
       <div className="panel-heading">
         <span>项目文件</span>
-        <span className="stage-label">只读</span>
+        <span className="stage-label">可编辑</span>
       </div>
       <div className="file-panel__content">
         <p className="workspace-version-note">
-          Agent 经批准后直接修改当前项目；所有变化都可在 Diff 中审查并撤销。
+          打开文本文件即可编辑；待审查期间的手动保存会并入当前 Run。
         </p>
         <WorkspaceRoot
           title="当前项目"

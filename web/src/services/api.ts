@@ -71,7 +71,12 @@ export type ReviewStatus = "pending" | "accepted" | "discarded";
 export type ApprovalDecision = "allow_once" | "allow_for_run" | "reject";
 export type ApprovalStatus = "approval_required" | "approved" | "rejected" | "cancelled";
 export type ApprovalMode = "ask" | "auto";
-export type VerificationStatus = "not_configured" | "command_start_failed" | "failed" | "passed";
+export type VerificationStatus =
+  | "not_configured"
+  | "command_start_failed"
+  | "failed"
+  | "passed"
+  | "stale";
 
 export type ToolApproval = {
   id: string;
@@ -250,6 +255,12 @@ export type WorkspaceFile = {
   language: string;
 };
 
+export type UpdateProjectFileResponse = {
+  file: WorkspaceFile;
+  run: RunSnapshot | null;
+  changes: ChangeSummary | null;
+};
+
 export type ChangeKind = "added" | "modified" | "deleted";
 
 export type FileChange = {
@@ -277,8 +288,8 @@ export type RunPreviewResponse = {
   url: string | null;
 };
 
-async function requestJson<T>(path: string): Promise<T> {
-  const response = await fetch(path);
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, init);
 
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
@@ -387,6 +398,23 @@ export function getProjectFile(projectId: string, path: string): Promise<Workspa
     project_id: projectId,
     path,
   }));
+}
+
+export function updateProjectFile(
+  projectId: string,
+  path: string,
+  content: string,
+  expectedContent: string,
+  runId: string | null,
+): Promise<UpdateProjectFileResponse> {
+  return requestJson<UpdateProjectFileResponse>(withQuery("/api/project/file", {
+    project_id: projectId,
+    path,
+  }), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content, expected_content: expectedContent, run_id: runId }),
+  });
 }
 
 export async function compileIntent(

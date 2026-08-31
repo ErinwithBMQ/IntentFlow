@@ -68,6 +68,7 @@ import {
   sendSessionMessage,
   subscribeToRun,
   updateProject,
+  updateProjectFile,
   undoRun,
   type CanvasNoteLabel,
   type ChangeSummary,
@@ -174,6 +175,12 @@ export function App() {
   const diffRequestSequence = useRef(0);
   const workspaceTabRef = useRef<WorkspaceTab>("canvas");
   const activeDiffPathRef = useRef<string | null>(null);
+  const autosaveTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+
+  useEffect(() => () => {
+    autosaveTimers.current.forEach((timer) => clearTimeout(timer));
+    autosaveTimers.current.clear();
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -333,6 +340,8 @@ export function App() {
 
   async function loadProjectIntoView(selectedProject: ProjectResponse) {
     closeRunStream.current?.();
+    autosaveTimers.current.forEach((timer) => clearTimeout(timer));
+    autosaveTimers.current.clear();
     setProject(selectedProject);
     setProjectTree(null);
     setOpenFiles([]);
@@ -383,6 +392,10 @@ export function App() {
 
   async function handleProjectSwitch(projectId: string) {
     if (!project || project.id === projectId || projectBusy) return;
+    if (
+      openFiles.some((file) => file.file && file.draft !== file.file.content)
+      && !window.confirm("仍有未保存的代码修改，切换项目会丢弃这些内容。继续吗？")
+    ) return;
     setProjectBusy(true);
     setProjectError("");
     try {
@@ -790,7 +803,19 @@ export function App() {
     const refreshedFiles = await Promise.all(openFilesRef.current.map(async (openFile) => {
       try {
         const file = await getProjectFile(project.id, openFile.path);
-        return { ...openFile, state: "ready" as const, file, error: "" };
+        const dirty = Boolean(
+          openFile.file && openFile.draft !== openFile.file.content,
+        );
+        return {
+          ...openFile,
+          state: "ready" as const,
+          file,
+          draft: dirty ? openFile.draft : file.content,
+          saveError: dirty && openFile.file?.content !== file.content
+            ? "项目文件已发生变化，保存前请撤销未保存内容并重新编辑"
+            : openFile.saveError,
+          error: "",
+        };
       } catch (error) {
         return {
           ...openFile,
@@ -835,6 +860,10 @@ export function App() {
       path,
       state: "loading",
       file: null,
+      draft: "",
+      revision: 0,
+      saving: false,
+      saveError: "",
       error: "",
     };
     setOpenFiles((currentFiles) => {
@@ -848,7 +877,9 @@ export function App() {
       const file = project ? await getProjectFile(project.id, path) : null;
       if (!file) throw new Error("当前没有可读取的项目文件");
       setOpenFiles((currentFiles) => currentFiles.map((item) => (
-        item.key === key ? { ...item, state: "ready", file, error: "" } : item
+        item.key === key
+          ? { ...item, state: "ready", file, draft: file.content, saveError: "", error: "" }
+          : item
       )));
     } catch (error) {
       setOpenFiles((currentFiles) => currentFiles.map((item) => (
@@ -860,6 +891,15 @@ export function App() {
   }
 
   function closeWorkspaceFile(key: string) {
+    const closingFile = openFiles.find((file) => file.key === key);
+    if (
+      closingFile?.file
+      && closingFile.draft !== closingFile.file.content
+      && !window.confirm(`关闭 ${closingFile.path} 并丢弃未保存修改吗？`)
+    ) return;
+    const timer = autosaveTimers.current.get(key);
+    if (timer) clearTimeout(timer);
+    autosaveTimers.current.delete(key);
     setOpenFiles((currentFiles) => {
       const closingIndex = currentFiles.findIndex((file) => file.key === key);
       const remaining = currentFiles.filter((file) => file.key !== key);
@@ -869,6 +909,82 @@ export function App() {
       }
       return remaining;
     });
+  }
+
+  function updateWorkspaceFileDraft(key: string, content: string) {
+    setOpenFiles((currentFiles) => currentFiles.map((file) => (
+      file.key === key
+        ? { ...file, draft: content, revision: file.revision + 1, saveError: "" }
+        : file
+    )));
+    scheduleWorkspaceAutosave(key);
+  }
+
+  async function saveWorkspaceFile(key: string) {
+    const openFile = openFilesRef.current.find((file) => file.key === key);
+    if (!project || !openFile?.file || openFile.draft === openFile.file.content) return;
+    if (openFile.saving) {
+      scheduleWorkspaceAutosave(key, 200);
+      return;
+    }
+    if (pendingReviewRun?.status === "running") return;
+    const savedRevision = openFile.revision;
+    const editableRun = pendingReviewRun;
+    setOpenFiles((currentFiles) => currentFiles.map((file) => (
+      file.key === key ? { ...file, saving: true, saveError: "" } : file
+    )));
+    try {
+      const response = await updateProjectFile(
+        project.id,
+        openFile.path,
+        openFile.draft,
+        openFile.file.content,
+        editableRun?.id ?? null,
+      );
+      setOpenFiles((currentFiles) => currentFiles.map((file) => (
+        file.key === key
+          ? {
+              ...file,
+              state: "ready",
+              file: response.file,
+              draft: file.revision === savedRevision ? response.file.content : file.draft,
+              saving: false,
+              saveError: "",
+              error: "",
+            }
+          : file
+      )));
+      if (response.run) {
+        setRun(response.run);
+        setRunBrief(response.run.intent);
+        setSessionRuns((currentRuns) => currentRuns.map(
+          (item) => item.id === response.run?.id ? response.run : item,
+        ));
+      }
+      if (response.changes) {
+        setChanges(response.changes);
+        setActiveDiff(null);
+        setActiveDiffPath(response.changes.files[0]?.path ?? null);
+      }
+      setPreviewRevision((current) => current + 1);
+      scheduleWorkspaceAutosave(key, 150);
+    } catch (error) {
+      setOpenFiles((currentFiles) => currentFiles.map((file) => (
+        file.key === key
+          ? { ...file, saving: false, saveError: errorMessage(error, "文件保存失败") }
+          : file
+      )));
+    }
+  }
+
+  function scheduleWorkspaceAutosave(key: string, delay = 500) {
+    const existing = autosaveTimers.current.get(key);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      autosaveTimers.current.delete(key);
+      void saveWorkspaceFile(key);
+    }, delay);
+    autosaveTimers.current.set(key, timer);
   }
 
   async function openRunDiff(runId: string, change: FileChange) {
@@ -954,7 +1070,7 @@ export function App() {
       ? "本次运行 Diff"
       : activeOpenFile
         ? `项目文件 / ${activeOpenFile.path}`
-        : "代码查看";
+        : "代码编辑";
   const verifiedRequirements = run?.report?.requirement_results.filter(
     (result) => result.status === "verified",
   ).length ?? 0;
@@ -1123,8 +1239,10 @@ export function App() {
               <CodeWorkspace
                 files={openFiles}
                 activeFileKey={activeFileKey}
+                editable={!pendingReviewRun || pendingReviewRun.status !== "running"}
                 onSelectFile={setActiveFileKey}
                 onCloseFile={closeWorkspaceFile}
+                onChangeFile={updateWorkspaceFileDraft}
               />
             ) : workspaceTab === "diff" ? (
               <DiffWorkspace

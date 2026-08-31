@@ -25,7 +25,7 @@ from app.agent.runner import DEFAULT_MAX_STEPS, AgentRunner
 from app.agent.tools import ToolContext, ToolRegistry
 from app.checkpoints import CheckpointConflictError, CheckpointError, RunCheckpoint
 from app.projects import ProjectRecord
-from app.workspaces import DEFAULT_IGNORED_NAMES, WorkspaceService
+from app.workspaces import DEFAULT_IGNORED_NAMES, WorkspaceFile, WorkspaceService
 
 ReviewStatus = Literal["pending", "accepted", "discarded"]
 WorkspaceMode = Literal["isolated", "direct"]
@@ -130,6 +130,43 @@ class RunRecord:
             if self.pending_finished_event is not None:
                 self.events.append(self.pending_finished_event)
                 self.pending_finished_event = None
+            self.changed.notify_all()
+        self.persist()
+
+    async def record_manual_edit(self, path: str) -> None:
+        async with self.changed:
+            if self.report is not None:
+                requirement_results = [
+                    result.model_copy(
+                        update={
+                            "status": "implemented"
+                            if result.status == "verified"
+                            else result.status,
+                            "evidence": [],
+                        }
+                    )
+                    for result in self.report.requirement_results
+                ]
+                self.report = self.report.model_copy(
+                    update={"evidence": [], "requirement_results": requirement_results}
+                )
+            if self.context_checkpoint is not None:
+                self.context_checkpoint = self.context_checkpoint.model_copy(
+                    update={"verification_results": []}
+                )
+            self.events.append(
+                RunEvent(
+                    sequence=len(self.events) + 1,
+                    kind="tool_finished",
+                    phase="acting",
+                    status="succeeded",
+                    action=f"已保存手动编辑：{path}",
+                    reason="文件内容已由用户修改，先前验证结果已失效",
+                    tool_name="manual_edit",
+                    target=path,
+                    verification_status="stale",
+                )
+            )
             self.changed.notify_all()
         self.persist()
 
@@ -364,6 +401,36 @@ class RunManager:
         record.task = asyncio.create_task(self._execute(record, runner, intent))
         return record.snapshot()
 
+    async def apply_manual_edit(
+        self,
+        run_id: str,
+        path: str,
+        content: str,
+        expected_content: str,
+    ) -> tuple[RunSnapshot, WorkspaceFile]:
+        record = self._require_editable_record(run_id)
+        if record.checkpoint is None:
+            raise RunReviewError("运行记录缺少 Checkpoint，无法保存手动编辑")
+        service = self.workspace_service or WorkspaceService(
+            ignored_names=record.project_ignored_names
+        )
+        updated = service.update_text(
+            record.workspace,
+            path,
+            content,
+            expected_content,
+            mutation_writer=record.checkpoint.apply_text_change,
+        )
+        await record.record_manual_edit(updated.path)
+        return record.snapshot(), updated
+
+    def pending_review_runs(self, project_id: str) -> list[RunRecord]:
+        return [
+            record
+            for record in self.records.values()
+            if record.project_id == project_id and record.review_status == "pending"
+        ]
+
     def restore(self, snapshot: RunSnapshot) -> RunSnapshot:
         project = (
             self.project_resolver(snapshot.project_id)
@@ -572,6 +639,16 @@ class RunManager:
         record = self.records.get(run_id)
         if record is None:
             raise KeyError(run_id)
+        return record
+
+    def _require_editable_record(self, run_id: str) -> RunRecord:
+        record = self._require_record(run_id)
+        if record.status == "running":
+            raise RunReviewError("Agent 运行期间不能手动保存文件")
+        if record.review_status != "pending":
+            raise RunReviewError("只有待审查的运行可以接收手动编辑")
+        if record.workspace_mode != "direct":
+            raise RunReviewError("当前运行不是直接工作区模式")
         return record
 
     async def _execute(
