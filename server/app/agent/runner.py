@@ -385,6 +385,7 @@ class AgentRunner:
                     tool_name=call.name,
                     target=self._tool_target(call),
                     evidence=[execution.result.summary] if execution.result.ok else [],
+                    verification_status=execution.result.verification_status,
                 )
 
                 if execution.report is not None:

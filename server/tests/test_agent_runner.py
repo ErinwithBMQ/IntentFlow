@@ -99,6 +99,12 @@ async def test_fake_model_completes_a_tool_loop(tmp_path) -> None:
     assert source.read_text(encoding="utf-8") == "export const value = 2;\n"
     assert [event.sequence for event in result.events] == list(range(1, len(result.events) + 1))
     assert any(event.tool_name == "run_command" for event in result.events)
+    verification_event = next(
+        event
+        for event in result.events
+        if event.kind == "tool_finished" and event.tool_name == "run_command"
+    )
+    assert verification_event.verification_status == "passed"
     assert len(model.received_histories[-1]) == 7
     assert isinstance(model.received_histories[-1][0], ContextSummary)
     assert result.report.evidence == ["test exited with code 0"]

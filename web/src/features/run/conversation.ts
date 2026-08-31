@@ -16,7 +16,15 @@ export type ConversationAction = {
   reason: string;
   requirementIds: string[];
   evidence: string[];
+  verificationStatus: RunEvent["verification_status"];
 };
+
+export const verificationStatusText = {
+  not_configured: "未配置验证",
+  command_start_failed: "命令无法启动",
+  failed: "验证失败",
+  passed: "验证通过",
+} as const;
 
 export type ConversationActivity = {
   id: string;
@@ -51,7 +59,7 @@ export function buildConversationActivities(events: RunEvent[]): ConversationAct
       const action = findPendingAction(activities, event.tool_name);
       if (action) {
         action.status = event.status;
-        action.action = event.action;
+        action.action = verificationActionText(event);
         action.reason = event.reason || action.reason;
         action.target = event.target ?? action.target;
         action.requirementIds = unique([
@@ -59,6 +67,7 @@ export function buildConversationActivities(events: RunEvent[]): ConversationAct
           ...event.related_requirement_ids,
         ]);
         action.evidence = unique([...action.evidence, ...event.evidence]);
+        action.verificationStatus = event.verification_status ?? action.verificationStatus;
         const owner = activities.find((activity) => activity.actions.includes(action));
         if (owner) refreshActivity(owner);
       } else {
@@ -145,11 +154,23 @@ function toAction(event: RunEvent): ConversationAction {
     toolName: event.tool_name,
     target: event.target,
     status: event.status,
-    action: event.action,
+    action: verificationActionText(event),
     reason: event.reason,
     requirementIds: event.related_requirement_ids,
     evidence: event.evidence,
+    verificationStatus: event.verification_status,
   };
+}
+
+function verificationActionText(event: RunEvent): string {
+  if (event.tool_name !== "run_command" || !event.verification_status) return event.action;
+  const command = event.target ?? "验证";
+  return {
+    not_configured: `${command} 未配置验证命令`,
+    command_start_failed: `${command} 验证命令无法启动`,
+    failed: `${command} 验证失败`,
+    passed: `${command} 验证通过`,
+  }[event.verification_status];
 }
 
 function toolStage(

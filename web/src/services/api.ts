@@ -71,6 +71,7 @@ export type ReviewStatus = "pending" | "accepted" | "discarded";
 export type ApprovalDecision = "allow_once" | "allow_for_run" | "reject";
 export type ApprovalStatus = "approval_required" | "approved" | "rejected" | "cancelled";
 export type ApprovalMode = "ask" | "auto";
+export type VerificationStatus = "not_configured" | "command_start_failed" | "failed" | "passed";
 
 export type ToolApproval = {
   id: string;
@@ -94,6 +95,7 @@ export type RunEvent = {
   tool_name: string | null;
   target: string | null;
   evidence: string[];
+  verification_status?: VerificationStatus | null;
   approval_id?: string | null;
   patch?: string | null;
   approval_status?: ApprovalStatus | null;

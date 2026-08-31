@@ -81,6 +81,7 @@ describe("buildConversationActivities", () => {
         target: "test",
         status: "failed",
         action: "测试退出码为 1",
+        verification_status: "failed",
         related_requirement_ids: ["REQ-01"],
         evidence: ["1 test failed"],
       }),
@@ -101,6 +102,35 @@ describe("buildConversationActivities", () => {
       requirementIds: ["REQ-01"],
     });
     expect(activities[0].actions[0].evidence).toEqual(["1 test failed"]);
+    expect(activities[0].actions[0]).toMatchObject({
+      action: "test 验证失败",
+      verificationStatus: "failed",
+    });
+  });
+
+  it.each([
+    ["not_configured", "test 未配置验证命令"],
+    ["command_start_failed", "test 验证命令无法启动"],
+    ["failed", "test 验证失败"],
+    ["passed", "test 验证通过"],
+  ] as const)("maps %s to a clear verification action", (verificationStatus, action) => {
+    const activities = buildConversationActivities([
+      event({
+        sequence: 1,
+        kind: "tool_finished",
+        phase: "verifying",
+        tool_name: "run_command",
+        target: "test",
+        status: verificationStatus === "passed" ? "succeeded" : "failed",
+        action: "raw command result",
+        verification_status: verificationStatus,
+      }),
+    ]);
+
+    expect(activities[0].actions[0]).toMatchObject({
+      action,
+      verificationStatus,
+    });
   });
 
   it("shows an unmatched latest model turn as current planning", () => {

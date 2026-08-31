@@ -256,6 +256,7 @@ Run a configured test or build command when one is available. Automated verifica
 but it is not required to finish an otherwise complete implementation. If no command is available,
 report the work as completed, explain that it was not automatically verified, and use implemented
 rather than verified for affected requirements. Use partial only when work is actually unfinished.
+If run_command reports not_configured or command_start_failed, do not retry the unchanged command.
 Every function call must include _intentflow with a concise user-visible action, reason,
 and the related requirement IDs. These fields must describe observable engineering actions,
 not hidden chain-of-thought. Write the user-visible action and reason in Simplified Chinese.

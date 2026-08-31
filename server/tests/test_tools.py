@@ -179,6 +179,56 @@ async def test_completed_report_allows_missing_automated_evidence(tmp_path) -> N
     assert execution.report.evidence == []
 
 
+async def test_unconfigured_command_has_a_distinct_verification_status(tmp_path) -> None:
+    execution = await ToolRegistry().execute(
+        ToolCall(
+            id="test-unconfigured",
+            name="run_command",
+            arguments={"command": "test"},
+        ),
+        ToolContext(tmp_path, {}),
+    )
+
+    assert execution.result.ok is False
+    assert execution.result.verification_status == "not_configured"
+    assert execution.result.error is not None
+    assert execution.result.error.kind == "command_not_configured"
+    assert execution.result.error.retryable is False
+    assert "Do not retry" in execution.result.error.suggestion
+
+
+async def test_command_start_failure_has_a_distinct_verification_status(tmp_path) -> None:
+    missing_executable = tmp_path / "missing-command.exe"
+    execution = await ToolRegistry().execute(
+        ToolCall(
+            id="test-start-failure",
+            name="run_command",
+            arguments={"command": "test"},
+        ),
+        ToolContext(tmp_path, {"test": (str(missing_executable),)}),
+    )
+
+    assert execution.result.ok is False
+    assert execution.result.verification_status == "command_start_failed"
+    assert execution.result.error is not None
+    assert execution.result.error.kind == "command_start_failed"
+    assert execution.result.error.retryable is False
+
+
+async def test_successful_command_is_recorded_as_passed_verification(tmp_path) -> None:
+    execution = await ToolRegistry().execute(
+        ToolCall(
+            id="test-success",
+            name="run_command",
+            arguments={"command": "test"},
+        ),
+        ToolContext(tmp_path, {"test": (sys.executable, "-c", "print('ok')")}),
+    )
+
+    assert execution.result.ok is True
+    assert execution.result.verification_status == "passed"
+
+
 async def test_failed_command_retains_key_failure_from_long_output(tmp_path) -> None:
     command = (
         sys.executable,
@@ -199,6 +249,7 @@ async def test_failed_command_retains_key_failure_from_long_output(tmp_path) -> 
     )
 
     assert execution.result.ok is False
+    assert execution.result.verification_status == "failed"
     assert execution.result.error is not None
     assert execution.result.error.kind == "verification_failed"
     assert "AssertionError" in execution.result.output

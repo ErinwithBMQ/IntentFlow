@@ -4,6 +4,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+VerificationStatus = Literal[
+    "not_configured",
+    "command_start_failed",
+    "failed",
+    "passed",
+]
+
 
 class IntentRequirement(BaseModel):
     id: str
@@ -50,6 +57,7 @@ class ToolResult(BaseModel):
     summary: str
     output: str = ""
     error: ToolError | None = None
+    verification_status: VerificationStatus | None = None
 
 
 class ToolError(BaseModel):
@@ -59,6 +67,8 @@ class ToolError(BaseModel):
         "not_found",
         "conflict",
         "io_error",
+        "command_not_configured",
+        "command_start_failed",
         "verification_failed",
         "timeout",
         "cancelled",
@@ -163,6 +173,7 @@ class RunEvent(BaseModel):
     tool_name: str | None = None
     target: str | None = None
     evidence: list[str] = Field(default_factory=list)
+    verification_status: VerificationStatus | None = None
     approval_id: str | None = None
     patch: str | None = None
     approval_status: Literal["approval_required", "approved", "rejected", "cancelled"] | None = None

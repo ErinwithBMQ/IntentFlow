@@ -21,7 +21,11 @@ import type {
 } from "../../services/api";
 import { SyntaxLine } from "../workspace/SyntaxLine";
 import { diffLineKind, languageFromPath } from "../workspace/workspaceState";
-import { buildConversationActivities, type ConversationAction } from "./conversation";
+import {
+  buildConversationActivities,
+  type ConversationAction,
+  verificationStatusText,
+} from "./conversation";
 
 type SingleRunConversationProps = {
   brief: IntentBrief;
@@ -436,6 +440,9 @@ function ConversationActionItem({
           </code>
         ))}
         {action.reason && <p>{action.reason}</p>}
+        {action.verificationStatus && (
+          <small>{verificationStatusText[action.verificationStatus]}</small>
+        )}
         {action.evidence.map((item) => <small key={item}>{item}</small>)}
       </div>
     </div>

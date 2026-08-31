@@ -89,4 +89,28 @@ describe("SingleRunConversation review actions", () => {
     expect(html).toContain("保留修改");
     expect(html).not.toContain("仍然保留修改");
   });
+
+  it("shows a structured verification status in Chinese", () => {
+    const run = runSnapshot("failed");
+    run.events = [
+      {
+        sequence: 1,
+        kind: "tool_finished",
+        phase: "verifying",
+        status: "failed",
+        action: "Command is not configured: test",
+        reason: "运行项目测试",
+        related_requirement_ids: [],
+        tool_name: "run_command",
+        target: "test",
+        evidence: [],
+        verification_status: "not_configured",
+      },
+    ];
+
+    const html = renderReview(run);
+
+    expect(html).toContain("test 未配置验证命令");
+    expect(html).toContain("未配置验证");
+  });
 });

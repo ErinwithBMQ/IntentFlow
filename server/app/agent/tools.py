@@ -10,7 +10,14 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from app.agent.models import RequirementClaim, RunReport, ToolCall, ToolError, ToolResult
+from app.agent.models import (
+    RequirementClaim,
+    RunReport,
+    ToolCall,
+    ToolError,
+    ToolResult,
+    VerificationStatus,
+)
 from app.checkpoints import CheckpointConflictError, CheckpointError
 
 
@@ -477,7 +484,17 @@ class RunCommandTool(BaseTool):
 
         command = context.allowed_commands.get(arguments.command)
         if command is None:
-            return _failed_execution(call, f"Command is not configured: {arguments.command}")
+            return _failed_execution(
+                call,
+                f"Command is not configured: {arguments.command}",
+                kind="command_not_configured",
+                verification_status="not_configured",
+                suggestion=(
+                    "Do not retry this command. Use another configured verification command or "
+                    "finish with the work marked implemented but unverified."
+                ),
+                details={"command": arguments.command},
+            )
 
         executable_command = _resolve_command_executable(command)
         try:
@@ -493,8 +510,14 @@ class RunCommandTool(BaseTool):
                 call,
                 "Command could not be started",
                 str(error),
-                kind="io_error",
+                kind="command_start_failed",
                 retryable=False,
+                verification_status="command_start_failed",
+                suggestion=(
+                    "Do not retry unchanged. Check the configured executable or finish with the "
+                    "work marked implemented but unverified."
+                ),
+                details={"command": arguments.command},
             )
 
         text = _summarize_command_output(output.decode("utf-8", errors="replace"))
@@ -522,6 +545,7 @@ class RunCommandTool(BaseTool):
                 text,
                 kind="verification_failed",
                 retryable=True,
+                verification_status="failed",
                 suggestion=(
                     "Use the failing cases and file locations to fix the code, "
                     "then rerun verification."
@@ -532,6 +556,7 @@ class RunCommandTool(BaseTool):
             call,
             f"{arguments.command} exited with code {process.returncode}",
             text,
+            verification_status="passed",
         )
 
     async def _wait_for_process(
@@ -658,7 +683,13 @@ class ToolRegistry:
         return None
 
 
-def _successful_execution(call: ToolCall, summary: str, output: str) -> ToolExecution:
+def _successful_execution(
+    call: ToolCall,
+    summary: str,
+    output: str,
+    *,
+    verification_status: VerificationStatus | None = None,
+) -> ToolExecution:
     return ToolExecution(
         result=ToolResult(
             call_id=call.id,
@@ -666,6 +697,7 @@ def _successful_execution(call: ToolCall, summary: str, output: str) -> ToolExec
             ok=True,
             summary=summary,
             output=output,
+            verification_status=verification_status,
         )
     )
 
@@ -681,6 +713,8 @@ def _failed_execution(
         "not_found",
         "conflict",
         "io_error",
+        "command_not_configured",
+        "command_start_failed",
         "verification_failed",
         "timeout",
         "cancelled",
@@ -690,6 +724,7 @@ def _failed_execution(
     retryable: bool = False,
     suggestion: str = "",
     details: dict[str, Any] | None = None,
+    verification_status: VerificationStatus | None = None,
 ) -> ToolExecution:
     return ToolExecution(
         result=ToolResult(
@@ -698,6 +733,7 @@ def _failed_execution(
             ok=False,
             summary=summary,
             output=output,
+            verification_status=verification_status,
             error=ToolError(
                 kind=kind,
                 message=summary,

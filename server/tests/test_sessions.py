@@ -13,6 +13,7 @@ from app.agent.models import (
     IntentBrief,
     IntentRequirement,
     ModelTurn,
+    RunEvent,
     RunMetrics,
     RunReport,
     ToolApproval,
@@ -114,7 +115,19 @@ def test_session_store_restores_messages_canvas_and_runs(tmp_path) -> None:
         session_id=session.id,
         trigger_message_id=message.id,
         intent=sample_brief(),
-        events=[],
+        events=[
+            RunEvent(
+                sequence=1,
+                kind="tool_finished",
+                phase="verifying",
+                status="failed",
+                action="Command is not configured: test",
+                reason="项目没有配置测试命令",
+                tool_name="run_command",
+                target="test",
+                verification_status="not_configured",
+            )
+        ],
         context_checkpoint=ContextCheckpoint(
             summary="已完成筛选实现",
             modified_files=["src/filter.ts"],
@@ -151,6 +164,7 @@ def test_session_store_restores_messages_canvas_and_runs(tmp_path) -> None:
     assert restored.runs[0].intent == sample_brief()
     assert restored.runs[0].context_checkpoint.summary == "已完成筛选实现"
     assert restored.runs[0].metrics.rounds[0].estimated_input_tokens == 120
+    assert restored.runs[0].events[0].verification_status == "not_configured"
     assert restored.runs[0].history[1].output == "export const filter = true;"
 
 
