@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { ConversationMessage } from "../../services/api";
+import type { ConversationMessage, IntentBrief } from "../../services/api";
 import { ConversationComposer } from "./ConversationComposer";
 import { MarkdownContent } from "./MarkdownContent";
 import { SessionConversation } from "./SessionConversation";
@@ -20,6 +20,20 @@ function assistantMessage(content: string): ConversationMessage {
     sequence: 1,
   };
 }
+
+const intent: IntentBrief = {
+  title: "优化 2048 页面",
+  goal: "让页面视觉更简洁",
+  requirements: [
+    {
+      id: "REQ-01",
+      description: "删除副标题文本",
+      acceptance_criteria: [],
+      source_ids: [],
+    },
+  ],
+  constraints: [],
+};
 
 describe("SessionConversation", () => {
   it("renders assistant Markdown without executing raw HTML", () => {
@@ -48,6 +62,28 @@ describe("SessionConversation", () => {
 
     expect(html).toContain("正在读取会话并判断下一步…");
     expect(html).not.toContain("Ask");
+  });
+
+  it("collapses the task breakdown by default", () => {
+    const message = assistantMessage("收到，我会处理《优化 2048 页面》。");
+    message.intent = intent;
+
+    const html = renderToStaticMarkup(
+      <SessionConversation
+        messages={[message]}
+        runs={[]}
+        selectedRunId={null}
+        selectedRunDetail={null}
+        responding={false}
+        onSelectRun={() => undefined}
+      />,
+    );
+
+    expect(html).toContain('<details class="session-intent-brief">');
+    expect(html).not.toContain('<details class="session-intent-brief" open="">');
+    expect(html).toContain("查看任务详情 · 1 项");
+    expect(html).toContain("删除副标题文本");
+    expect(html).not.toContain("REQ-01");
   });
 
   it("uses one Agent input with an independent approval selector", () => {

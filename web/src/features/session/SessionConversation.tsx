@@ -70,17 +70,20 @@ export function SessionConversation({
                   <p>{message.content}</p>
                 )}
                 {message.intent && (
-                  <div className="session-intent-brief">
-                    <strong>{message.intent.title}</strong>
-                    <span>{message.intent.goal}</span>
-                    <ul>
-                      {message.intent.requirements.map((requirement) => (
-                        <li key={requirement.id}>
-                          <b>{requirement.id}</b>{requirement.description}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                  <details className="session-intent-brief">
+                    <summary>
+                      查看任务详情 · {message.intent.requirements.length} 项
+                    </summary>
+                    <div>
+                      <strong>{message.intent.title}</strong>
+                      <span>{message.intent.goal}</span>
+                      <ul>
+                        {message.intent.requirements.map((requirement) => (
+                          <li key={requirement.id}>{requirement.description}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </details>
                 )}
                 {message.canvas_snapshot_id && (
                   <small className="session-message__attachment">

@@ -85,6 +85,13 @@ export function SingleRunConversation({
     (approval) => approval.status === "approval_required",
   ) ?? null;
   const hasVerification = (run.report?.evidence.length ?? 0) > 0;
+  const completedRequirementCount = run.report?.requirement_results.filter(
+    (result) => result.status === "verified" || result.status === "implemented",
+  ).length ?? 0;
+  const latestVerificationStatus = [...run.events]
+    .reverse()
+    .find((event) => event.tool_name === "run_command" && event.verification_status)
+    ?.verification_status;
 
   return (
     <div className={`conversation-content ${showIntentContext ? "" : "conversation-content--embedded"}`}>
@@ -109,24 +116,28 @@ export function SingleRunConversation({
             <div className="conversation-avatar"><Sparkles size={14} /></div>
             <div className="conversation-bubble">
               <span className="conversation-speaker">Agent 理解</span>
-              <strong>我会按本轮冻结的 Intent Brief 实现并验证</strong>
-              <div className="conversation-intent-list">
-                {brief.requirements.map((requirement) => (
-                  <button
-                    type="button"
-                    key={requirement.id}
-                    onClick={() => onHighlightSources(requirement.source_ids)}
-                  >
-                    <span>{requirement.id}</span>{requirement.description}
-                  </button>
-                ))}
-              </div>
-              {brief.constraints.length > 0 && (
-                <details className="conversation-details">
-                  <summary>查看 {brief.constraints.length} 项约束</summary>
+              <strong>接下来会处理：{brief.title}</strong>
+              <details className="conversation-details intent-details">
+                <summary>
+                  查看任务详情 · {brief.requirements.length} 项
+                  <ChevronDown size={12} />
+                </summary>
+                <p>{brief.goal}</p>
+                <div className="conversation-intent-list">
+                  {brief.requirements.map((requirement) => (
+                    <button
+                      type="button"
+                      key={requirement.id}
+                      onClick={() => onHighlightSources(requirement.source_ids)}
+                    >
+                      {requirement.description}
+                    </button>
+                  ))}
+                </div>
+                {brief.constraints.length > 0 && (
                   <ul>{brief.constraints.map((constraint) => <li key={constraint}>{constraint}</li>)}</ul>
-                </details>
-              )}
+                )}
+              </details>
             </div>
           </section>
         </>
@@ -277,64 +288,97 @@ export function SingleRunConversation({
           <div className="conversation-bubble conversation-bubble--result">
             <span className="conversation-speaker">Agent 结果</span>
             <div className={`conversation-verdict conversation-verdict--${run.status}`}>
-              <strong>{run.report.summary}</strong>
-              {run.report.evidence.map((item) => (
-                <small key={item}><Check size={11} />{item}</small>
-              ))}
-              {run.report.unresolved.map((item) => (
-                <small className="conversation-unresolved" key={item}><X size={11} />{item}</small>
-              ))}
+              <strong>{reportHeadline(run.report.status, brief.title)}</strong>
+              <div className="result-overview" aria-label="运行结果概览">
+                {run.report.requirement_results.length > 0 && (
+                  <span>
+                    {completedRequirementCount}/{run.report.requirement_results.length} 项完成
+                  </span>
+                )}
+                <span>
+                  {verificationOverview(run.report.evidence.length, latestVerificationStatus)}
+                </span>
+                {changes && <span>{changes.changed_files} 个文件变更</span>}
+                {run.report.unresolved.length > 0 && (
+                  <span className="result-overview__warning">
+                    {run.report.unresolved.length} 项未解决
+                  </span>
+                )}
+              </div>
+              <details className="conversation-details report-summary-details">
+                <summary>
+                  查看完整总结
+                  <ChevronDown size={12} />
+                </summary>
+                <p>{run.report.summary}</p>
+                {run.report.unresolved.map((item) => (
+                  <small className="conversation-unresolved" key={item}>
+                    <X size={11} />{item}
+                  </small>
+                ))}
+              </details>
             </div>
 
-            <div className="requirement-results">
-              <span className="requirement-results__title">逐需求结论</span>
-              {run.report.requirement_results.map((result) => {
-                const sourceIds = brief.requirements.find(
-                  (requirement) => requirement.id === result.requirement_id,
-                )?.source_ids ?? [];
-                return (
-                  <article className="requirement-result" key={result.requirement_id}>
-                    <div className="requirement-result__heading">
-                      <span>{result.requirement_id}</span>
-                      <span className={`requirement-status requirement-status--${result.status}`}>
-                        {requirementStatusText[result.status]}
-                      </span>
-                      <button
-                        type="button"
-                        title="定位来源便签"
-                        aria-label={`定位 ${result.requirement_id} 的来源便签`}
-                        disabled={sourceIds.length === 0}
-                        onClick={() => onHighlightSources(sourceIds)}
-                      >
-                        <LocateFixed size={13} />
-                      </button>
-                    </div>
-                    <p>{result.summary}</p>
-                    {(result.related_files.length > 0 || result.evidence.length > 0) && (
-                      <details className="conversation-details">
-                        <summary>
-                          {result.related_files.length} 个文件 · {result.evidence.length} 条证据
-                          <ChevronDown size={12} />
-                        </summary>
-                        {result.related_files.map((file) => (
+            {run.report.requirement_results.length > 0 && (
+              <details className="requirement-results">
+                <summary>
+                  <span>查看需求与证据</span>
+                  <small>
+                    {completedRequirementCount}/{run.report.requirement_results.length}
+                  </small>
+                  <ChevronDown size={12} />
+                </summary>
+                <div>
+                  {run.report.requirement_results.map((result) => {
+                    const requirement = brief.requirements.find(
+                      (item) => item.id === result.requirement_id,
+                    );
+                    const sourceIds = requirement?.source_ids ?? [];
+                    return (
+                      <article className="requirement-result" key={result.requirement_id}>
+                        <div className="requirement-result__heading">
+                          <strong>{requirement?.description ?? result.requirement_id}</strong>
+                          <span className={`requirement-status requirement-status--${result.status}`}>
+                            {requirementStatusText[result.status]}
+                          </span>
                           <button
-                            className="related-file-link"
                             type="button"
-                            key={file}
-                            onClick={() => onOpenRelatedFile(file)}
+                            title="定位来源便签"
+                            aria-label={`定位 ${result.requirement_id} 的来源便签`}
+                            disabled={sourceIds.length === 0}
+                            onClick={() => onHighlightSources(sourceIds)}
                           >
-                            <FileCode2 size={11} />{file}
+                            <LocateFixed size={13} />
                           </button>
-                        ))}
-                        {result.evidence.map((item) => (
-                          <small key={item}><Check size={11} />{item}</small>
-                        ))}
-                      </details>
-                    )}
-                  </article>
-                );
-              })}
-            </div>
+                        </div>
+                        <p>{result.summary}</p>
+                        {(result.related_files.length > 0 || result.evidence.length > 0) && (
+                          <details className="conversation-details">
+                            <summary>
+                              {result.related_files.length} 个文件 · {result.evidence.length} 条证据
+                              <ChevronDown size={12} />
+                            </summary>
+                            {result.related_files.map((file) => (
+                              <button
+                                className="related-file-link"
+                                type="button"
+                                key={file}
+                                onClick={() => onOpenRelatedFile(file)}
+                              >
+                                <FileCode2 size={11} />{file}
+                              </button>
+                            ))}
+                            {result.evidence.map((item) => (
+                              <small key={item}><Check size={11} />{item}</small>
+                            ))}
+                          </details>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+              </details>
+            )}
           </div>
         </section>
       )}
@@ -408,6 +452,21 @@ export function SingleRunConversation({
       <RawEventDetails events={run.events} />
     </div>
   );
+}
+
+function reportHeadline(status: "completed" | "partial" | "failed", title: string): string {
+  if (status === "completed") return `已完成：${title}`;
+  if (status === "partial") return `部分完成：${title}`;
+  return `未完成：${title}`;
+}
+
+function verificationOverview(
+  evidenceCount: number,
+  latestStatus: RunEvent["verification_status"],
+): string {
+  if (evidenceCount > 0) return `${evidenceCount} 项验证通过`;
+  if (latestStatus) return verificationStatusText[latestStatus];
+  return "未自动验证";
 }
 
 function ConversationActionItem({

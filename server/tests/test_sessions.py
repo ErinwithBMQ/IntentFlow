@@ -966,7 +966,7 @@ async def test_agent_message_links_and_persists_its_run(tmp_path, monkeypatch) -
     assert response.json()["user_message"]["mode"] == "agent"
     assert response.json()["run"]["approval_mode"] == "auto"
     assert response.json()["run"]["project_id"] == "todo-demo"
-    assert response.json()["assistant_message"]["content"].startswith("收到，我来处理")
+    assert response.json()["assistant_message"]["content"].startswith("收到，我会处理")
     assert response.json()["user_message"]["run_id"] == run_id
     assert restored is not None
     assert [message.run_id for message in restored.messages] == [run_id, run_id]

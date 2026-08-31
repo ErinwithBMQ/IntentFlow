@@ -470,8 +470,7 @@ async def _process_session_message(
         "assistant",
         "agent",
         (
-            f"收到，我来处理《{brief.title}》。我会在修改前按权限请求批准，并直接在当前项目中实现和验证。"
-            "完成后你可以查看代码和 Diff，再决定保留修改或撤销本轮。"
+            f"收到，我会处理《{brief.title}》。修改前会按当前权限请求批准，完成后可以查看 Diff。"
         ),
         run_id=run.id,
         intent=brief,

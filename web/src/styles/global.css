@@ -144,11 +144,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .diff-lines.approval-patch { min-height: auto; max-height: 320px; padding: 6px 0; border: 1px solid #dfddd5; border-radius: 5px; font-size: 11px; line-height: 1.55; }
 .diff-lines.approval-patch .diff-line { grid-template-columns: 38px minmax(0, 1fr); }
 .approval-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
-.session-intent-brief { padding: 9px; display: grid; gap: 5px; border-left: 2px solid #6f8ae6; color: #626965; background: #f6f7fb; }
-.session-intent-brief > strong { color: #27302b; font-size: 12px; }
-.session-intent-brief > span { font-size: 11px; line-height: 1.5; }
+.session-intent-brief { padding: 8px 9px; border-left: 2px solid #6f8ae6; color: #626965; background: #f6f7fb; font-size: 11px; }
+.session-intent-brief > summary { color: #59635d; font-weight: 600; cursor: pointer; }
+.session-intent-brief > div { margin-top: 8px; display: grid; gap: 5px; }
+.session-intent-brief strong { color: #27302b; font-size: 12px; }
+.session-intent-brief span { font-size: 11px; line-height: 1.5; }
 .session-intent-brief ul { margin: 2px 0 0; padding-left: 17px; display: grid; gap: 4px; font-size: 11px; line-height: 1.45; }
-.session-intent-brief li b { margin-right: 5px; color: #3b6cff; font-family: "Cascadia Code", monospace; }
 .session-message__attachment { display: flex; align-items: center; gap: 4px; color: #6576a8; font-size: 10px; }
 .session-run-link { width: fit-content; padding: 4px 6px; display: flex; align-items: center; gap: 4px; border: 1px solid #cbd5fb; border-radius: 4px; color: #315bb5; background: #f2f5ff; font-size: 10px; cursor: pointer; }
 .conversation-composer { padding: 10px 11px 9px; border-top: 1px solid #d9d8d2; background: #fbfaf7; box-shadow: 0 -8px 20px rgb(45 49 46 / 4%); }
@@ -176,9 +177,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .conversation-bubble > p { margin: 0; color: #626965; font-size: 12px; line-height: 1.55; }
 .conversation-bubble > small { color: #8b908c; font-size: 11px; }
 .conversation-intent-list { display: grid; gap: 5px; }
-.conversation-intent-list button { width: 100%; padding: 8px 9px; display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 4px; border: 1px solid #e7e6e0; border-radius: 4px; color: #525955; background: #f8f7f3; font-size: 12px; line-height: 1.45; text-align: left; cursor: pointer; }
+.conversation-intent-list button { width: 100%; padding: 8px 9px; display: block; border: 1px solid #e7e6e0; border-radius: 4px; color: #525955; background: #f8f7f3; font-size: 12px; line-height: 1.45; text-align: left; cursor: pointer; }
 .conversation-intent-list button:hover { border-color: #b8c6f5; background: #f4f6ff; }
-.conversation-intent-list button span { color: #3b6cff; font: 11px "Cascadia Code", monospace; }
+.intent-details > p { margin: 8px 0; color: #626965; line-height: 1.55; }
 .conversation-live-status { margin-top: 7px; padding: 10px 11px; display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 8px; border: 1px solid #cbd5fb; border-radius: 6px; color: #315bb5; background: #f2f5ff; }
 .conversation-live-status > svg { color: #3b6cff; }
 .conversation-live-status > div { min-width: 0; display: grid; gap: 2px; }
@@ -216,6 +217,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .conversation-verdict strong { font-size: 13px; line-height: 1.5; }
 .conversation-verdict small { display: flex; align-items: flex-start; gap: 4px; color: #238a5a; font-size: 11px; line-height: 1.45; }
 .conversation-verdict .conversation-unresolved { color: #a83b31; }
+.result-overview { display: flex; flex-wrap: wrap; gap: 5px; }
+.result-overview span { padding: 3px 6px; border-radius: 3px; color: #4d6255; background: #e6efe9; font-size: 10px; font-weight: 600; }
+.result-overview .result-overview__warning { color: #8b433b; background: #f8e7e4; }
+.report-summary-details { margin-top: 2px; }
+.report-summary-details p { margin: 7px 0 0; color: #626965; font-size: 11px; line-height: 1.55; }
+.report-summary-details small { margin-top: 6px; }
 .review-card { gap: 9px; }
 .review-card__heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .review-status { padding: 3px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
@@ -235,11 +242,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .raw-events span { font: 10px "Cascadia Code", monospace; }
 .raw-events strong { color: #626965; font-size: 11px; font-weight: 500; }
 .raw-events code { overflow-wrap: anywhere; color: #6f7672; font: 10px "Cascadia Code", monospace; }
-.requirement-results { margin-top: 14px; border-top: 1px solid #deddd7; }
-.requirement-results__title { display: block; padding: 12px 0 4px; color: #6b716d; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.requirement-results { margin-top: 12px; border-top: 1px solid #deddd7; color: #6b716d; }
+.requirement-results > summary { padding: 11px 0 4px; display: flex; align-items: center; gap: 6px; color: #59635d; font-size: 11px; font-weight: 600; cursor: pointer; list-style: none; }
+.requirement-results > summary::-webkit-details-marker { display: none; }
+.requirement-results > summary small { margin-left: auto; color: #8b908c; font: 10px "Cascadia Code", monospace; }
+.requirement-results[open] > summary svg { transform: rotate(180deg); }
 .requirement-result { padding: 10px 0; border-bottom: 1px solid #e4e3de; }
 .requirement-result__heading { min-height: 24px; display: grid; grid-template-columns: minmax(0, 1fr) auto 24px; align-items: center; gap: 7px; }
-.requirement-result__heading > span:first-child { color: #3b6cff; font: 11px "Cascadia Code", monospace; }
+.requirement-result__heading > strong { color: #3d4540; font-size: 11px; line-height: 1.45; }
 .requirement-result__heading button { width: 24px; height: 24px; display: grid; place-items: center; border: 0; color: #6b716d; background: transparent; cursor: pointer; }
 .requirement-result__heading button:disabled { color: #c4c6c4; cursor: default; }
 .requirement-status { padding: 3px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }

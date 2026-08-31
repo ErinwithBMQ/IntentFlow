@@ -7,7 +7,14 @@ import { SingleRunConversation } from "./SingleRunConversation";
 const brief: IntentBrief = {
   title: "Static page",
   goal: "Build a static page",
-  requirements: [],
+  requirements: [
+    {
+      id: "REQ-01",
+      description: "Remove the subtitle",
+      acceptance_criteria: [],
+      source_ids: [],
+    },
+  ],
   constraints: [],
 };
 
@@ -112,5 +119,31 @@ describe("SingleRunConversation review actions", () => {
 
     expect(html).toContain("test 未配置验证命令");
     expect(html).toContain("未配置验证");
+  });
+
+  it("keeps detailed results behind progressive disclosure", () => {
+    const run = runSnapshot("completed", ["test exited with code 0"]);
+    if (!run.report) throw new Error("Expected a completed report");
+    run.report.summary = "Removed the subtitle and simplified the page styling.";
+    run.report.requirement_results = [
+      {
+        requirement_id: "REQ-01",
+        status: "verified",
+        summary: "The subtitle is no longer rendered.",
+        related_files: ["src/main.js"],
+        evidence: ["test exited with code 0"],
+      },
+    ];
+
+    const html = renderReview(run);
+
+    expect(html).toContain("已完成：Static page");
+    expect(html).toContain("1/1 项完成");
+    expect(html).toContain("1 项验证通过");
+    expect(html).toContain("1 个文件变更");
+    expect(html).toContain("查看完整总结");
+    expect(html).toContain("查看需求与证据");
+    expect(html).toContain("Remove the subtitle");
+    expect(html.match(/test exited with code 0/g)).toHaveLength(1);
   });
 });

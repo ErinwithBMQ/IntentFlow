@@ -262,6 +262,8 @@ and the related requirement IDs. These fields must describe observable engineeri
 not hidden chain-of-thought. Write the user-visible action and reason in Simplified Chinese.
 Use report_result instead of returning a final text-only answer.
 When calling report_result, include exactly one requirements item for every IntentBrief requirement.
+Keep report_result.summary to one or two concise user-facing sentences about the overall outcome.
+Do not repeat per-requirement details, file lists, or raw test/build evidence in the summary.
 The requirement status is your assessment; the runner independently derives the final status from
 real related file edits and successful test or build evidence. Never claim verified without running
 a successful verification command related to that requirement after the latest file edit.
