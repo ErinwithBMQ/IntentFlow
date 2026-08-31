@@ -1,4 +1,4 @@
-import { Paperclip, Send, ShieldCheck, Square } from "lucide-react";
+import { CircleHelp, Paperclip, Send, ShieldCheck, Square, Workflow } from "lucide-react";
 import type { KeyboardEvent } from "react";
 
 import type { ApprovalMode } from "../../services/api";
@@ -7,6 +7,7 @@ type ConversationComposerProps = {
   value: string;
   approvalMode: ApprovalMode;
   attachCanvas: boolean;
+  canvasPlanMode: boolean;
   sending: boolean;
   activityRunning: boolean;
   interrupting: boolean;
@@ -15,6 +16,7 @@ type ConversationComposerProps = {
   onChange: (value: string) => void;
   onApprovalModeChange: (mode: ApprovalMode) => void;
   onAttachCanvasChange: (attached: boolean) => void;
+  onCanvasPlanModeChange: (enabled: boolean) => void;
   onSubmit: () => void;
   onInterrupt: () => void;
 };
@@ -28,6 +30,7 @@ export function ConversationComposer({
   value,
   approvalMode,
   attachCanvas,
+  canvasPlanMode,
   sending,
   activityRunning,
   interrupting,
@@ -36,6 +39,7 @@ export function ConversationComposer({
   onChange,
   onApprovalModeChange,
   onAttachCanvasChange,
+  onCanvasPlanModeChange,
   onSubmit,
   onInterrupt,
 }: ConversationComposerProps) {
@@ -89,16 +93,42 @@ export function ConversationComposer({
           />
           <Paperclip size={13} />Canvas
         </label>
-        <button
-          className={`conversation-send ${canInterrupt ? "conversation-send--interrupt" : ""}`}
-          type="button"
-          disabled={canInterrupt ? interrupting : submitDisabled}
-          title={canInterrupt ? "中断当前处理" : "发送"}
-          aria-label={canInterrupt ? "中断当前处理" : "发送"}
-          onClick={canInterrupt ? onInterrupt : onSubmit}
-        >
-          {canInterrupt ? <Square size={13} fill="currentColor" /> : <Send size={14} />}
-        </button>
+        <div className="conversation-composer__actions">
+          <div className="canvas-plan-control">
+            <button
+              className={`canvas-plan-toggle ${canvasPlanMode ? "canvas-plan-toggle--active" : ""}`}
+              type="button"
+              aria-pressed={canvasPlanMode}
+              aria-describedby="canvas-plan-tooltip"
+              disabled={sending}
+              onClick={() => onCanvasPlanModeChange(!canvasPlanMode)}
+            >
+              <Workflow size={13} />规划 Canvas 模式
+            </button>
+            <span
+              className="canvas-plan-help"
+              role="img"
+              tabIndex={0}
+              aria-label="规划 Canvas 模式说明"
+            >
+              <CircleHelp size={13} />
+              <span id="canvas-plan-tooltip" className="canvas-plan-tooltip" role="tooltip">
+                开启后，Agent 在执行任务前会先为你进行规划，并绘制出相应的 Canvas 面板。
+                关闭时，对话内容不会触发 Canvas 规划。
+              </span>
+            </span>
+          </div>
+          <button
+            className={`conversation-send ${canInterrupt ? "conversation-send--interrupt" : ""}`}
+            type="button"
+            disabled={canInterrupt ? interrupting : submitDisabled}
+            title={canInterrupt ? "中断当前处理" : "发送"}
+            aria-label={canInterrupt ? "中断当前处理" : "发送"}
+            onClick={canInterrupt ? onInterrupt : onSubmit}
+          >
+            {canInterrupt ? <Square size={13} fill="currentColor" /> : <Send size={14} />}
+          </button>
+        </div>
       </div>
       <div className="conversation-composer__hint">
         <span>{hint}</span>

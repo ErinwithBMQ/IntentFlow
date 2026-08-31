@@ -3,8 +3,6 @@
 from app.intent.compiler import (
     AIIntentCompiler,
     IntentCompileError,
-    apply_canvas_summary_to_brief,
-    canvas_from_intent_brief,
     compile_canvas,
     validate_canvas_input,
 )
@@ -16,8 +14,6 @@ __all__ = [
     "CanvasCompileResponse",
     "IntentCanvas",
     "IntentCompileError",
-    "apply_canvas_summary_to_brief",
-    "canvas_from_intent_brief",
     "compile_canvas",
     "validate_canvas_input",
 ]

@@ -194,6 +194,7 @@ export function App() {
   const [messageDraft, setMessageDraft] = useState("");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("ask");
   const [attachCanvas, setAttachCanvas] = useState(false);
+  const [canvasPlanMode, setCanvasPlanMode] = useState(false);
   const [messageSending, setMessageSending] = useState(false);
   const [activityInterrupting, setActivityInterrupting] = useState(false);
   const [sessionDeleting, setSessionDeleting] = useState(false);
@@ -767,6 +768,7 @@ export function App() {
         approvalMode,
         submittedCanvas,
         confirmedTaskDraft?.id ?? null,
+        confirmedTaskDraft ? false : canvasPlanMode,
       );
       setSessionMessages((current) => [
         ...current.filter((message) => message.id !== optimisticMessageId),
@@ -1483,6 +1485,7 @@ export function App() {
               value={messageDraft}
               approvalMode={approvalMode}
               attachCanvas={attachCanvas}
+              canvasPlanMode={canvasPlanMode}
               sending={messageSending}
               activityRunning={run?.status === "running"}
               interrupting={activityInterrupting}
@@ -1491,6 +1494,7 @@ export function App() {
               onChange={setMessageDraft}
               onApprovalModeChange={setApprovalMode}
               onAttachCanvasChange={setAttachCanvas}
+              onCanvasPlanModeChange={setCanvasPlanMode}
               onSubmit={() => void handleSendMessage()}
               onInterrupt={() => void handleInterrupt()}
             />

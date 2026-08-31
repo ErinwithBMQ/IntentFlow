@@ -391,11 +391,13 @@ export function sendSessionMessage(
   approvalMode: ApprovalMode,
   canvas: IntentCanvas | null,
   taskDraftId: string | null = null,
+  canvasPlanMode = false,
 ): Promise<SendSessionMessageResponse> {
   return postJson<SendSessionMessageResponse>(`/api/sessions/${sessionId}/messages`, {
     content,
     approval_mode: approvalMode,
     attach_canvas: canvas !== null,
+    canvas_plan_mode: canvasPlanMode,
     canvas,
     ...(taskDraftId ? { task_draft_id: taskDraftId } : {}),
   });

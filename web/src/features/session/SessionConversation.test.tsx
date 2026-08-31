@@ -126,6 +126,7 @@ describe("SessionConversation", () => {
         value="解释上一轮结果"
         approvalMode="ask"
         attachCanvas={false}
+        canvasPlanMode={false}
         sending={false}
         activityRunning={false}
         interrupting={false}
@@ -134,6 +135,7 @@ describe("SessionConversation", () => {
         onChange={() => undefined}
         onApprovalModeChange={() => undefined}
         onAttachCanvasChange={() => undefined}
+        onCanvasPlanModeChange={() => undefined}
         onSubmit={() => undefined}
         onInterrupt={() => undefined}
       />,
@@ -141,6 +143,8 @@ describe("SessionConversation", () => {
 
     expect(html).toContain("Agent 权限");
     expect(html).toContain("请求批准");
+    expect(html).toContain("规划 Canvas 模式");
+    expect(html).toContain("开启后，Agent 在执行任务前会先为你进行规划");
     expect(html).toContain("上一轮修改待审查，你仍可继续提问");
     expect(html).not.toContain(">Plan<");
   });
@@ -151,6 +155,7 @@ describe("SessionConversation", () => {
         value=""
         approvalMode="ask"
         attachCanvas={false}
+        canvasPlanMode
         sending
         activityRunning={false}
         interrupting={false}
@@ -159,12 +164,14 @@ describe("SessionConversation", () => {
         onChange={() => undefined}
         onApprovalModeChange={() => undefined}
         onAttachCanvasChange={() => undefined}
+        onCanvasPlanModeChange={() => undefined}
         onSubmit={() => undefined}
         onInterrupt={() => undefined}
       />,
     );
 
     expect(html).toContain('aria-label="中断当前处理"');
+    expect(html).toContain('aria-pressed="true"');
     expect(html).toContain("Agent 正在读取会话并判断下一步…");
   });
 });

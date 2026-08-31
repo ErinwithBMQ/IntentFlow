@@ -160,7 +160,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .permission-mode select { max-width: 108px; border: 0; color: #3f4742; background: transparent; font-size: 10px; outline: none; cursor: pointer; }
 .canvas-attachment-toggle { display: flex; align-items: center; gap: 4px; color: #626965; font-size: 10px; cursor: pointer; }
 .canvas-attachment-toggle input { margin: 0; }
-.conversation-send { width: 31px; height: 31px; margin-left: auto; display: grid; place-items: center; border: 0; border-radius: 5px; color: #fff; background: #1d211f; cursor: pointer; }
+.conversation-composer__actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.canvas-plan-control { position: relative; display: flex; align-items: center; gap: 3px; }
+.canvas-plan-toggle { height: 29px; padding: 0 8px; display: flex; align-items: center; gap: 4px; border: 1px solid #d6d5cf; border-radius: 5px; color: #626965; background: #f7f6f2; font-size: 10px; cursor: pointer; }
+.canvas-plan-toggle--active { border-color: #315bb5; color: #244bb5; background: #edf2ff; }
+.canvas-plan-help { position: relative; width: 20px; height: 20px; display: grid; place-items: center; color: #8b908c; cursor: help; }
+.canvas-plan-help:focus-visible { border-radius: 50%; outline: 2px solid #9db1ef; outline-offset: 1px; }
+.canvas-plan-tooltip { position: absolute; z-index: 20; right: -38px; bottom: calc(100% + 9px); width: 260px; padding: 8px 10px; visibility: hidden; border: 1px solid #d6d5cf; border-radius: 6px; color: #4c544f; background: #fffefa; box-shadow: 0 8px 24px rgb(45 49 46 / 14%); font-size: 11px; font-weight: 400; line-height: 1.55; opacity: 0; transform: translateY(4px); transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease; pointer-events: none; }
+.canvas-plan-help:hover .canvas-plan-tooltip, .canvas-plan-help:focus .canvas-plan-tooltip { visibility: visible; opacity: 1; transform: translateY(0); }
+.conversation-send { width: 31px; height: 31px; display: grid; place-items: center; border: 0; border-radius: 5px; color: #fff; background: #1d211f; cursor: pointer; }
 .conversation-send--interrupt { color: #a83b31; background: #fff0ed; border: 1px solid #d7a19b; }
 .conversation-send:disabled { cursor: not-allowed; opacity: .38; }
 .conversation-composer__hint { margin-top: 6px; display: flex; justify-content: space-between; gap: 8px; color: #9a9e9b; font-size: 9px; }

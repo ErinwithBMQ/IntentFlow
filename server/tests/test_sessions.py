@@ -23,7 +23,7 @@ from app.agent.models import (
 from app.checkpoints import RunCheckpoint
 from app.conversation_service import build_project_context
 from app.intent.compiler import IntentRequestDecision
-from app.intent.models import CanvasNote, CanvasPosition, IntentCanvas
+from app.intent.models import CanvasConnection, CanvasNote, CanvasPosition, IntentCanvas
 from app.projects import ProjectRegistry
 from app.runs import RunManager, RunSnapshot
 from app.session_context import SessionContextBuilder
@@ -53,6 +53,35 @@ def sample_brief() -> IntentBrief:
                 acceptance_criteria=["筛选结果正确"],
                 source_ids=["message-1"],
             )
+        ],
+    )
+
+
+def sample_plan_canvas() -> IntentCanvas:
+    return IntentCanvas(
+        notes=[
+            CanvasNote(
+                id="goal",
+                text="规划待办筛选",
+                label="idea",
+                position=CanvasPosition(x=40, y=120),
+            ),
+            CanvasNote(
+                id="filter",
+                text="显示未完成任务",
+                label="behavior",
+                position=CanvasPosition(x=340, y=80),
+            ),
+            CanvasNote(
+                id="check",
+                text="筛选结果正确",
+                label="acceptance",
+                position=CanvasPosition(x=640, y=80),
+            ),
+        ],
+        connections=[
+            CanvasConnection(id="e1", source="goal", target="filter", label="包含"),
+            CanvasConnection(id="e2", source="filter", target="check", label="验收"),
         ],
     )
 
@@ -529,7 +558,37 @@ class StubCompiler:
         )
         assert project_context
         assert "Authoritative IntentFlow session context" in session_context
-        return IntentRequestDecision(action="propose", brief=sample_brief())
+        return IntentRequestDecision(
+            action="propose",
+            brief=sample_brief(),
+            canvas=sample_plan_canvas(),
+        )
+
+    async def refine_plan(
+        self,
+        original: IntentBrief,
+        canvas: IntentCanvas,
+        *,
+        project_context: str = "",
+        session_context: str = "",
+    ) -> IntentBrief:
+        assert project_context
+        assert "Authoritative IntentFlow session context" in session_context
+        behavior = next(note for note in canvas.notes if note.label == "behavior")
+        acceptance = next(note for note in canvas.notes if note.label == "acceptance")
+        return original.model_copy(
+            update={
+                "requirements": [
+                    original.requirements[0].model_copy(
+                        update={
+                            "description": behavior.text,
+                            "acceptance_criteria": [acceptance.text],
+                            "source_ids": [behavior.id, acceptance.id],
+                        }
+                    )
+                ]
+            }
+        )
 
 
 class GreetingCompiler:
@@ -573,6 +632,31 @@ class ProjectQuestionCompiler:
             action="answer",
             response="这是 IntentFlow 使用的 Todo 演示项目。",
         )
+
+
+class TextPlanningCompiler:
+    async def compile_agent_request(
+        self,
+        canvas: IntentCanvas,
+        primary_source_id: str,
+        *,
+        project_context: str = "",
+        session_context: str = "",
+    ) -> IntentRequestDecision:
+        assert any(
+            note.id == primary_source_id and note.text == "先规划筛选功能"
+            for note in canvas.notes
+        )
+        assert project_context
+        assert "Authoritative IntentFlow session context" in session_context
+        return IntentRequestDecision(
+            action="answer",
+            response="可以先从筛选状态和空状态反馈两部分考虑。",
+        )
+
+    async def compile_plan_request(self, *args: object, **kwargs: object) -> IntentRequestDecision:
+        del args, kwargs
+        raise AssertionError("关闭规划 Canvas 模式时不应调用 Canvas 规划")
 
 
 class ReviewQuestionCompiler:
@@ -637,7 +721,11 @@ async def test_plan_message_returns_structured_intent_without_a_run(tmp_path, mo
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post(
             f"/api/sessions/{session.id}/messages",
-            json={"content": "先规划筛选功能", "mode": "plan"},
+            json={
+                "content": "先规划筛选功能",
+                "mode": "agent",
+                "canvas_plan_mode": True,
+            },
         )
 
     payload = response.json()
@@ -645,12 +733,41 @@ async def test_plan_message_returns_structured_intent_without_a_run(tmp_path, mo
     assert payload["run"] is None
     assert payload["task_draft"]["status"] == "proposed"
     assert payload["task_draft"]["version"] == 1
-    assert payload["task_draft"]["canvas"]["notes"][0]["text"] == "允许筛选未完成任务"
-    assert payload["task_draft"]["canvas"]["connections"][0]["label"] == "拆分为"
+    assert payload["task_draft"]["canvas"]["notes"][0]["text"] == "规划待办筛选"
+    assert payload["task_draft"]["canvas"]["connections"][0]["label"] == "包含"
     assert payload["assistant_message"]["task_draft_id"] == payload["task_draft"]["id"]
     assert payload["assistant_message"]["intent"]["title"] == "增加筛选"
     assert payload["assistant_message"]["content"] == (
         "收到，我先根据当前项目整理了一份《增加筛选》计划。"
+    )
+
+
+async def test_plan_wording_cannot_trigger_canvas_when_mode_is_disabled(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = make_store(tmp_path / "intentflow.db")
+    monkeypatch.setattr(main_module, "session_store", store)
+    monkeypatch.setattr(
+        main_module,
+        "create_ai_intent_compiler",
+        lambda: TextPlanningCompiler(),
+    )
+    session = store.create_session("todo-demo")
+    transport = ASGITransport(app=main_module.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "先规划筛选功能", "mode": "agent"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 201
+    assert payload["run"] is None
+    assert payload["task_draft"] is None
+    assert payload["assistant_message"]["content"] == (
+        "可以先从筛选状态和空状态反馈两部分考虑。"
     )
 
 
@@ -668,7 +785,11 @@ async def test_plan_question_returns_direct_answer_without_intent(tmp_path, monk
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post(
             f"/api/sessions/{session.id}/messages",
-            json={"content": "我们这是一个什么项目", "mode": "plan"},
+            json={
+                "content": "我们这是一个什么项目",
+                "mode": "agent",
+                "canvas_plan_mode": True,
+            },
         )
 
     payload = response.json()
@@ -1024,6 +1145,7 @@ async def test_confirmed_canvas_creates_a_new_draft_version_and_run(tmp_path, mo
     monkeypatch.setattr(main_module, "session_store", store)
     monkeypatch.setattr(main_module, "project_registry", registry)
     monkeypatch.setattr(main_module, "run_manager", manager)
+    monkeypatch.setattr(main_module, "create_ai_intent_compiler", lambda: StubCompiler())
     session = store.create_session("todo-demo")
     source_message = store.add_message(session.id, "user", "plan", "先规划筛选功能")
     proposal = store.add_task_draft(
@@ -1032,7 +1154,7 @@ async def test_confirmed_canvas_creates_a_new_draft_version_and_run(tmp_path, mo
         sample_brief(),
         status="proposed",
     )
-    confirmed_canvas = main_module.canvas_from_intent_brief(sample_brief()).model_dump()
+    confirmed_canvas = sample_plan_canvas().model_dump()
     confirmed_canvas["notes"][1]["text"] = "确认后的筛选需求"
     transport = ASGITransport(app=main_module.app)
 

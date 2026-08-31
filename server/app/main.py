@@ -21,8 +21,6 @@ from app.intent import (
     CanvasCompileRequest,
     CanvasCompileResponse,
     IntentCompileError,
-    apply_canvas_summary_to_brief,
-    canvas_from_intent_brief,
     compile_canvas,
     validate_canvas_input,
 )
@@ -145,6 +143,7 @@ class SendSessionMessageRequest(BaseModel):
     mode: ConversationMode = "agent"
     approval_mode: ApprovalMode | None = None
     attach_canvas: bool = False
+    canvas_plan_mode: bool = False
     canvas: IntentCanvas | None = None
     task_draft_id: str | None = None
 
@@ -401,9 +400,35 @@ async def _process_session_message(
     )
     try:
         if parent_task_draft is not None and request.canvas is not None:
-            brief = apply_canvas_summary_to_brief(parent_task_draft.intent, request.canvas)
+            compiler = create_ai_intent_compiler()
+            brief = await compiler.refine_plan(
+                parent_task_draft.intent,
+                request.canvas,
+                project_context=project_context,
+                session_context=session_context,
+            )
             decision = None
-        elif request.mode == "agent":
+        elif request.canvas_plan_mode:
+            compiler = create_ai_intent_compiler()
+            decision = await compiler.compile_plan_request(
+                compilation_canvas,
+                user_message.id,
+                project_context=project_context,
+                session_context=session_context,
+            )
+            if decision.brief is None:
+                assistant_message = session_store.add_message(
+                    session_id,
+                    "assistant",
+                    "plan",
+                    decision.response or "请告诉我希望规划的具体任务。",
+                )
+                return SendSessionMessageResponse(
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                )
+            brief = decision.brief
+        else:
             compiler = create_ai_intent_compiler()
             decision = await compiler.compile_agent_request(
                 compilation_canvas,
@@ -423,40 +448,20 @@ async def _process_session_message(
                     assistant_message=assistant_message,
                 )
             brief = decision.brief
-        else:
-            compiler = create_ai_intent_compiler()
-            decision = await compiler.compile_plan_request(
-                compilation_canvas,
-                user_message.id,
-                project_context=project_context,
-                session_context=session_context,
-            )
-            if decision.brief is None:
-                assistant_message = session_store.add_message(
-                    session_id,
-                    "assistant",
-                    "plan",
-                    decision.response or "请告诉我希望规划的具体改动。",
-                )
-                return SendSessionMessageResponse(
-                    user_message=user_message,
-                    assistant_message=assistant_message,
-                )
-            brief = decision.brief
     except ValueError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     except IntentCompileError as error:
         raise HTTPException(status_code=502, detail=f"AI 意图整理失败：{error}") from error
 
-    if parent_task_draft is None and (
-        request.mode == "plan" or (decision is not None and decision.action == "propose")
-    ):
+    if parent_task_draft is None and decision is not None and decision.action == "propose":
+        if decision is None or decision.canvas is None:
+            raise HTTPException(status_code=502, detail="AI 任务草案缺少 Canvas 概览")
         task_draft = session_store.add_task_draft(
             session_id,
             user_message.id,
             brief,
             status="proposed",
-            canvas=canvas_from_intent_brief(brief),
+            canvas=decision.canvas,
         )
         session_store.attach_task_draft(user_message.id, task_draft.id)
         assistant_message = session_store.add_message(
