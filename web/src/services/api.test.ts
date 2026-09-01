@@ -9,6 +9,7 @@ import {
   createSession,
   deleteSession,
   getHealth,
+  getModelSettings,
   getProjectFile,
   getProjectTree,
   getRunChanges,
@@ -20,12 +21,15 @@ import {
   listProjects,
   listSessions,
   registerProject,
+  removeProject,
   resolveRunApproval,
+  selectModel,
   sendSessionMessage,
   stopRun,
   undoRun,
   updateProject,
   updateProjectFile,
+  updateModelSettings,
   type IntentCanvas,
 } from "./api";
 
@@ -56,6 +60,51 @@ describe("getHealth", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 503 })));
 
     await expect(getHealth()).rejects.toThrow("请求失败：503");
+  });
+
+  it("reads, saves, and switches the shared model configuration", async () => {
+    const settings = {
+      base_url: "https://api.example.com/v1",
+      models: ["model-a", "model-b"],
+      active_model: "model-a",
+      has_api_key: true,
+    };
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
+      new Response(JSON.stringify(settings), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getModelSettings();
+    await updateModelSettings({
+      api_key: "secret",
+      base_url: settings.base_url,
+      models: settings.models,
+      active_model: settings.active_model,
+    });
+    await selectModel("model-b");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/model-settings", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/model-settings",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({
+          api_key: "secret",
+          base_url: settings.base_url,
+          models: settings.models,
+          active_model: settings.active_model,
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/model-settings/active",
+      expect.objectContaining({ method: "PATCH", body: JSON.stringify({ model: "model-b" }) }),
+    );
   });
 
   it("sends the project prompt when updating project settings", async () => {
@@ -360,6 +409,18 @@ describe("getHealth", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/sessions/session-1",
+      { method: "DELETE" },
+    );
+  });
+
+  it("removes a project registration", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await removeProject("project-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-1",
       { method: "DELETE" },
     );
   });

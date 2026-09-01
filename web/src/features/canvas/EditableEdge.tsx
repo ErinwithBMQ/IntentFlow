@@ -4,7 +4,7 @@ import {
   getBezierPath,
   type EdgeProps,
 } from "@xyflow/react";
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 type EditableEdgeCallbacks = {
   editable: boolean;
@@ -63,9 +63,20 @@ export function EditableEdge({
   });
   const labelText = typeof label === "string" ? label : "";
   const editing = callbacks.editable && callbacks.editingEdgeId === id;
+  const [draft, setDraft] = useState(labelText);
+  const composing = useRef(false);
   const labelPosition = {
     transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
   };
+
+  useEffect(() => {
+    if (editing) setDraft(labelText);
+  }, [editing, labelText]);
+
+  function finishEditing() {
+    callbacks.onChange(id, draft);
+    callbacks.onFinishEditing();
+  }
 
   return (
     <>
@@ -84,24 +95,32 @@ export function EditableEdge({
             style={labelPosition}
             onBlur={(event) => {
               if (!event.currentTarget.contains(event.relatedTarget)) {
-                callbacks.onFinishEditing();
+                finishEditing();
               }
             }}
             onDoubleClick={(event) => event.stopPropagation()}
           >
             <span className="inline-edge-editor__measure" aria-hidden="true">
-              {labelText || "输入文字"}
+              {draft || "输入文字"}
             </span>
             <input
               autoFocus
               aria-label="连线文字"
               size={1}
-              value={labelText}
+              value={draft}
               placeholder="输入文字"
-              onChange={(event) => callbacks.onChange(id, event.target.value)}
+              onChange={(event) => setDraft(event.target.value)}
+              onCompositionStart={() => {
+                composing.current = true;
+              }}
+              onCompositionEnd={(event) => {
+                composing.current = false;
+                setDraft(event.currentTarget.value);
+              }}
               onFocus={(event) => event.currentTarget.select()}
               onKeyDown={(event) => {
                 event.stopPropagation();
+                if (composing.current || event.nativeEvent.isComposing) return;
                 if (event.key === "Enter" || event.key === "Escape") {
                   event.currentTarget.blur();
                 }

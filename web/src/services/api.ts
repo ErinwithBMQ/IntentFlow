@@ -4,6 +4,20 @@ export type HealthResponse = {
   version: string;
 };
 
+export type ModelSettingsResponse = {
+  base_url: string;
+  models: string[];
+  active_model: string;
+  has_api_key: boolean;
+};
+
+export type UpdateModelSettingsRequest = {
+  api_key: string | null;
+  base_url: string;
+  models: string[];
+  active_model: string;
+};
+
 export type ProjectResponse = {
   id: string;
   name: string;
@@ -322,6 +336,20 @@ export function getHealth(): Promise<HealthResponse> {
   return requestJson<HealthResponse>("/api/health");
 }
 
+export function getModelSettings(): Promise<ModelSettingsResponse> {
+  return requestJson<ModelSettingsResponse>("/api/model-settings");
+}
+
+export function updateModelSettings(
+  settings: UpdateModelSettingsRequest,
+): Promise<ModelSettingsResponse> {
+  return putJson<ModelSettingsResponse>("/api/model-settings", settings);
+}
+
+export function selectModel(model: string): Promise<ModelSettingsResponse> {
+  return patchJson<ModelSettingsResponse>("/api/model-settings/active", { model });
+}
+
 export function getProject(): Promise<ProjectResponse | null> {
   return requestJson<ProjectResponse | null>("/api/project");
 }
@@ -356,6 +384,14 @@ export function createProject(
 
 export function activateProject(projectId: string): Promise<ProjectResponse> {
   return postJson<ProjectResponse>(`/api/projects/${projectId}/activate`);
+}
+
+export async function removeProject(projectId: string): Promise<void> {
+  const response = await fetch(`/api/projects/${projectId}`, { method: "DELETE" });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? `移除项目失败：${response.status}`);
+  }
 }
 
 export function updateProject(
@@ -480,6 +516,19 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
 async function patchJson<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
     method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? `请求失败：${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
+async function putJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });

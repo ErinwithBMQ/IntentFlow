@@ -3,7 +3,6 @@ import mimetypes
 from pathlib import Path
 from typing import Literal
 
-from dotenv import dotenv_values
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -25,6 +24,7 @@ from app.intent import (
     validate_canvas_input,
 )
 from app.intent.models import CanvasNote, CanvasPosition, IntentCanvas
+from app.model_settings import ModelSettings, ModelSettingsError, ModelSettingsStore
 from app.projects import (
     ProjectRecord,
     ProjectRegistrationError,
@@ -97,10 +97,12 @@ PREVIEW_MEDIA_TYPES = {
 database_path = repository_root / "runtime-data" / "intentflow.db"
 session_store = SessionStore(database_path)
 project_registry = ProjectRegistry(database_path, repository_root)
+model_settings_store = ModelSettingsStore(database_path, repository_root / ".env")
 run_manager = RunManager(
     repository_root,
     snapshot_sink=session_store.save_run,
     project_resolver=project_registry.get,
+    model_config_resolver=model_settings_store.require_config,
 )
 for stored_run in session_store.load_runs():
     if stored_run.project_id is None and stored_run.session_id:
@@ -139,6 +141,17 @@ class UpdateProjectRequest(BaseModel):
     typecheck_command: list[str] | None = None
     ignored_names: list[str] = Field(default_factory=list)
     prompt: str | None = Field(default=None, max_length=20_000)
+
+
+class UpdateModelSettingsRequest(BaseModel):
+    api_key: str | None = Field(default=None, max_length=4_096)
+    base_url: str = Field(default="", max_length=2_048)
+    models: list[str] = Field(min_length=1, max_length=20)
+    active_model: str = Field(min_length=1, max_length=200)
+
+
+class SelectModelRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=200)
 
 
 class SendSessionMessageRequest(BaseModel):
@@ -194,6 +207,32 @@ active_message_tasks: dict[str, asyncio.Task[SendSessionMessageResponse]] = {}
 @app.get("/api/health", response_model=HealthResponse)
 async def get_health() -> HealthResponse:
     return HealthResponse()
+
+
+@app.get("/api/model-settings", response_model=ModelSettings)
+async def get_model_settings() -> ModelSettings:
+    return model_settings_store.get()
+
+
+@app.put("/api/model-settings", response_model=ModelSettings)
+async def update_model_settings(request: UpdateModelSettingsRequest) -> ModelSettings:
+    try:
+        return model_settings_store.update(
+            api_key=request.api_key,
+            base_url=request.base_url,
+            models=request.models,
+            active_model=request.active_model,
+        )
+    except ModelSettingsError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.patch("/api/model-settings/active", response_model=ModelSettings)
+async def select_model(request: SelectModelRequest) -> ModelSettings:
+    try:
+        return model_settings_store.set_active_model(request.model)
+    except ModelSettingsError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @app.get("/api/projects", response_model=list[ProjectResponse])
@@ -256,6 +295,16 @@ async def activate_project(project_id: str) -> ProjectResponse:
         return project_response(project_registry.activate(project_id))
     except KeyError as error:
         raise HTTPException(status_code=404, detail="项目不存在") from error
+
+
+@app.delete("/api/projects/{project_id}", status_code=204)
+async def remove_project(project_id: str) -> Response:
+    ensure_project_change_available()
+    try:
+        project_registry.remove(project_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="项目不存在") from error
+    return Response(status_code=204)
 
 
 @app.patch("/api/projects/{project_id}", response_model=ProjectResponse)
@@ -755,13 +804,7 @@ def create_conversation_responder() -> ConversationResponder:
 
 
 def model_config() -> tuple[str, str, str | None]:
-    config = dotenv_values(repository_root / ".env")
-    api_key = (config.get("OPENAI_API_KEY") or "").strip()
-    model = (config.get("OPENAI_MODEL") or "").strip()
-    base_url = (config.get("OPENAI_BASE_URL") or "").strip() or None
-    if not api_key or not model:
-        raise ValueError("请先在根目录 .env 配置 OPENAI_API_KEY 和 OPENAI_MODEL")
-    return api_key, model, base_url
+    return model_settings_store.require_config()
 
 
 def conversation_canvas(

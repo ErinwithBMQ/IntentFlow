@@ -1,4 +1,4 @@
-import { FolderOpen, Plus, Settings2, X } from "lucide-react";
+import { FolderOpen, Plus, Settings2, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { ProjectResponse, ProjectTemplate } from "../../services/api";
@@ -14,6 +14,7 @@ type ProjectDialogProps = {
   onPickParent: () => Promise<string | null>;
   onRegisterPath: (path: string) => void;
   onCreate: (parentPath: string, name: string, template: ProjectTemplate) => void;
+  onRemove: (project: ProjectResponse) => void;
   onSave: (project: ProjectResponse) => void;
 };
 
@@ -30,6 +31,7 @@ export function ProjectDialog({
   onPickParent,
   onRegisterPath,
   onCreate,
+  onRemove,
   onSave,
 }: ProjectDialogProps) {
   const [tab, setTab] = useState<DialogTab>("existing");
@@ -129,6 +131,21 @@ export function ProjectDialog({
 
         {tab === "existing" && (
           <div className="project-dialog__body">
+            {project && !project.ready && (
+              <div className="project-dialog__missing-project">
+                <strong>原项目文件夹已无法访问</strong>
+                <code>{project.root_path}</code>
+                <p>可以改选其他项目，或仅从 IntentFlow 的项目列表中移除此记录。</p>
+                <button
+                  className="project-dialog__remove"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onRemove(project)}
+                >
+                  <Trash2 size={15} />从列表中移除
+                </button>
+              </div>
+            )}
             <div className="project-dialog__hero">
               <FolderOpen size={30} />
               <div>
@@ -197,7 +214,6 @@ export function ProjectDialog({
             >
               <Plus size={15} />创建并打开
             </button>
-            <p className="project-dialog__note">创建项目不会自动安装依赖或运行命令。</p>
           </div>
         )}
 

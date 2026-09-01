@@ -17,6 +17,7 @@ import {
   Plus,
   RotateCcw,
   Settings2,
+  SlidersHorizontal,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -33,6 +34,7 @@ import {
 import { EditableEdge, EditableEdgeProvider } from "./features/canvas/EditableEdge";
 import { NoteNode, NoteNodeProvider } from "./features/canvas/NoteNode";
 import { ProjectDialog } from "./features/projects/ProjectDialog";
+import { ModelSettingsDialog } from "./features/settings/ModelSettingsDialog";
 import { SingleRunConversation } from "./features/run/SingleRunConversation";
 import { ConversationComposer } from "./features/session/ConversationComposer";
 import { SessionConversation } from "./features/session/SessionConversation";
@@ -51,6 +53,7 @@ import {
   createSession,
   deleteSession,
   getHealth,
+  getModelSettings,
   getProject,
   getProjectFile,
   getProjectTree,
@@ -65,11 +68,14 @@ import {
   pickParentDirectory,
   pickProjectDirectory,
   registerProject,
+  removeProject,
   resolveRunApproval,
+  selectModel,
   sendSessionMessage,
   subscribeToRun,
   updateProject,
   updateProjectFile,
+  updateModelSettings,
   undoRun,
   type CanvasNoteLabel,
   type ChangeSummary,
@@ -80,12 +86,14 @@ import {
   type FileDiff,
   type IntentBrief,
   type IntentCanvas,
+  type ModelSettingsResponse,
   type ProjectResponse,
   type ProjectTemplate,
   type RunPreviewResponse,
   type RunSnapshot,
   type SessionRecord,
   type TaskDraftSnapshot,
+  type UpdateModelSettingsRequest,
   type WorkspaceTree,
 } from "./services/api";
 
@@ -160,6 +168,11 @@ export function App() {
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
   const [projectError, setProjectError] = useState("");
+  const [modelSettings, setModelSettings] = useState<ModelSettingsResponse | null>(null);
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
+  const [modelSettingsBusy, setModelSettingsBusy] = useState(false);
+  const [modelSettingsError, setModelSettingsError] = useState("");
+  const [modelSwitching, setModelSwitching] = useState(false);
   const [run, setRun] = useState<RunSnapshot | null>(null);
   const [runBrief, setRunBrief] = useState<IntentBrief | null>(null);
   const [runError, setRunError] = useState("");
@@ -214,14 +227,16 @@ export function App() {
     let active = true;
     async function bootstrap() {
       try {
-        const [health, projectInfo, availableProjects] = await Promise.all([
+        const [health, projectInfo, availableProjects, availableModels] = await Promise.all([
           getHealth(),
           getProject(),
           listProjects(),
+          getModelSettings(),
         ]);
         if (active && health.status === "ok") {
           setConnection("connected");
           setProjects(availableProjects);
+          setModelSettings(availableModels);
           if (projectInfo?.ready) {
             await loadProjectIntoView(projectInfo);
           } else {
@@ -443,7 +458,7 @@ export function App() {
     setReviewError("");
   }
 
-  async function loadProjectIntoView(selectedProject: ProjectResponse) {
+  function clearProjectView(selectedProject: ProjectResponse | null) {
     closeRunStream.current?.();
     autosaveTimers.current.forEach((timer) => clearTimeout(timer));
     autosaveTimers.current.clear();
@@ -451,6 +466,8 @@ export function App() {
     setProjectTree(null);
     setOpenFiles([]);
     setActiveFileKey(null);
+    setSessions([]);
+    setActiveSessionId(null);
     setSessionMessages([]);
     setSessionRuns([]);
     setTaskDrafts([]);
@@ -462,6 +479,10 @@ export function App() {
     clearRunReview();
     setWorkspaceError("");
     setMessageError("");
+  }
+
+  async function loadProjectIntoView(selectedProject: ProjectResponse) {
+    clearProjectView(selectedProject);
 
     try {
       const [tree, availableSessions] = await Promise.all([
@@ -586,6 +607,62 @@ export function App() {
       setProjectError(errorMessage(error, "无法保存项目设置"));
     } finally {
       setProjectBusy(false);
+    }
+  }
+
+  async function handleSaveModelSettings(settings: UpdateModelSettingsRequest) {
+    setModelSettingsBusy(true);
+    setModelSettingsError("");
+    try {
+      setModelSettings(await updateModelSettings(settings));
+      setModelSettingsOpen(false);
+    } catch (error) {
+      setModelSettingsError(errorMessage(error, "无法保存模型配置"));
+    } finally {
+      setModelSettingsBusy(false);
+    }
+  }
+
+  async function handleRemoveProject(removedProject: ProjectResponse) {
+    const confirmed = window.confirm(
+      `仅从 IntentFlow 的项目列表中移除“${removedProject.name}”吗？本地文件和历史对话不会被删除。`,
+    );
+    if (!confirmed) return;
+
+    setProjectBusy(true);
+    setProjectError("");
+    try {
+      await removeProject(removedProject.id);
+      const [availableProjects, nextProject] = await Promise.all([
+        listProjects(),
+        getProject(),
+      ]);
+      setProjects(availableProjects);
+      if (nextProject?.ready) {
+        await loadProjectIntoView(nextProject);
+        setProjectDialogOpen(false);
+      } else {
+        clearProjectView(nextProject);
+        setProjectDialogOpen(true);
+      }
+    } catch (error) {
+      setProjectError(errorMessage(error, "无法移除项目"));
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function handleModelChange(model: string) {
+    if (!model || model === modelSettings?.active_model) return;
+    setModelSwitching(true);
+    setModelSettingsError("");
+    try {
+      setModelSettings(await selectModel(model));
+    } catch (error) {
+      setModelSettingsError(errorMessage(error, "无法切换模型"));
+      setModelSettingsOpen(true);
+    } finally {
+      setModelSwitching(false);
     }
   }
 
@@ -1269,6 +1346,17 @@ export function App() {
           >
             <Settings2 size={14} />
           </button>
+          <button
+            className="model-settings-button"
+            type="button"
+            disabled={modelSettingsBusy || messageSending || run?.status === "running"}
+            onClick={() => {
+              setModelSettingsError("");
+              setModelSettingsOpen(true);
+            }}
+          >
+            <SlidersHorizontal size={14} />模型配置
+          </button>
         </div>
         <div className="topbar-actions">
           <div className={`connection-state connection-state--${connection}`}>
@@ -1511,6 +1599,9 @@ export function App() {
             <ConversationComposer
               value={messageDraft}
               approvalMode={approvalMode}
+              models={modelSettings?.models ?? []}
+              activeModel={modelSettings?.active_model ?? ""}
+              modelSwitching={modelSwitching}
               attachCanvas={attachCanvas}
               canvasPlanMode={canvasPlanMode}
               sending={messageSending}
@@ -1520,6 +1611,7 @@ export function App() {
               error={messageError}
               onChange={setMessageDraft}
               onApprovalModeChange={setApprovalMode}
+              onModelChange={(model) => void handleModelChange(model)}
               onAttachCanvasChange={setAttachCanvas}
               onCanvasPlanModeChange={setCanvasPlanMode}
               onSubmit={() => void handleSendMessage()}
@@ -1563,7 +1655,16 @@ export function App() {
         onCreate={(parentPath, name, template) => {
           void handleCreateProject(parentPath, name, template);
         }}
+        onRemove={(removedProject) => void handleRemoveProject(removedProject)}
         onSave={(updatedProject) => void handleSaveProject(updatedProject)}
+      />
+      <ModelSettingsDialog
+        open={modelSettingsOpen}
+        settings={modelSettings}
+        busy={modelSettingsBusy}
+        error={modelSettingsError}
+        onClose={() => setModelSettingsOpen(false)}
+        onSave={(settings) => void handleSaveModelSettings(settings)}
       />
     </main>
   );

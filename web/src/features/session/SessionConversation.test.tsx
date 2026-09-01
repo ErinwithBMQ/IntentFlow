@@ -125,6 +125,9 @@ describe("SessionConversation", () => {
       <ConversationComposer
         value="解释上一轮结果"
         approvalMode="ask"
+        models={["deepseek-chat", "deepseek-reasoner"]}
+        activeModel="deepseek-chat"
+        modelSwitching={false}
         attachCanvas={false}
         canvasPlanMode={false}
         sending={false}
@@ -134,6 +137,7 @@ describe("SessionConversation", () => {
         error=""
         onChange={() => undefined}
         onApprovalModeChange={() => undefined}
+        onModelChange={() => undefined}
         onAttachCanvasChange={() => undefined}
         onCanvasPlanModeChange={() => undefined}
         onSubmit={() => undefined}
@@ -143,9 +147,11 @@ describe("SessionConversation", () => {
 
     expect(html).toContain("Agent 权限");
     expect(html).toContain("请求批准");
+    expect(html).toContain("当前模型");
+    expect(html).toContain("deepseek-reasoner");
     expect(html).toContain("规划 Canvas 模式");
     expect(html).toContain("开启后，Agent 在执行任务前会先为你进行规划");
-    expect(html).toContain("上一轮修改待审查，你仍可继续提问");
+    expect(html).not.toContain("上一轮修改待审查，你仍可继续提问");
     expect(html).not.toContain(">Plan<");
   });
 
@@ -154,6 +160,9 @@ describe("SessionConversation", () => {
       <ConversationComposer
         value=""
         approvalMode="ask"
+        models={["deepseek-chat"]}
+        activeModel="deepseek-chat"
+        modelSwitching={false}
         attachCanvas={false}
         canvasPlanMode
         sending
@@ -163,6 +172,7 @@ describe("SessionConversation", () => {
         error=""
         onChange={() => undefined}
         onApprovalModeChange={() => undefined}
+        onModelChange={() => undefined}
         onAttachCanvasChange={() => undefined}
         onCanvasPlanModeChange={() => undefined}
         onSubmit={() => undefined}
@@ -172,6 +182,6 @@ describe("SessionConversation", () => {
 
     expect(html).toContain('aria-label="中断当前处理"');
     expect(html).toContain('aria-pressed="true"');
-    expect(html).toContain("Agent 正在读取会话并判断下一步…");
+    expect(html).not.toContain("Agent 正在读取会话并判断下一步…");
   });
 });

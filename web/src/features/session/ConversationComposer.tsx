@@ -1,4 +1,12 @@
-import { CircleHelp, Paperclip, Send, ShieldCheck, Square, Workflow } from "lucide-react";
+import {
+  CircleHelp,
+  Paperclip,
+  RefreshCw,
+  Send,
+  ShieldCheck,
+  Square,
+  Workflow,
+} from "lucide-react";
 import type { KeyboardEvent } from "react";
 
 import type { ApprovalMode } from "../../services/api";
@@ -6,6 +14,9 @@ import type { ApprovalMode } from "../../services/api";
 type ConversationComposerProps = {
   value: string;
   approvalMode: ApprovalMode;
+  models: string[];
+  activeModel: string;
+  modelSwitching: boolean;
   attachCanvas: boolean;
   canvasPlanMode: boolean;
   sending: boolean;
@@ -15,6 +26,7 @@ type ConversationComposerProps = {
   error: string;
   onChange: (value: string) => void;
   onApprovalModeChange: (mode: ApprovalMode) => void;
+  onModelChange: (model: string) => void;
   onAttachCanvasChange: (attached: boolean) => void;
   onCanvasPlanModeChange: (enabled: boolean) => void;
   onSubmit: () => void;
@@ -24,6 +36,9 @@ type ConversationComposerProps = {
 export function ConversationComposer({
   value,
   approvalMode,
+  models,
+  activeModel,
+  modelSwitching,
   attachCanvas,
   canvasPlanMode,
   sending,
@@ -32,6 +47,7 @@ export function ConversationComposer({
   error,
   onChange,
   onApprovalModeChange,
+  onModelChange,
   onAttachCanvasChange,
   onCanvasPlanModeChange,
   onSubmit,
@@ -69,6 +85,20 @@ export function ConversationComposer({
           >
             <option value="ask">请求批准</option>
             <option value="auto">自动允许</option>
+          </select>
+        </label>
+        <label className="model-switcher" title="切换后，下一条消息将使用所选模型">
+          <RefreshCw size={12} />
+          <select
+            aria-label="当前模型"
+            value={activeModel}
+            disabled={sending || activityRunning || modelSwitching || models.length === 0}
+            onChange={(event) => onModelChange(event.target.value)}
+          >
+            {models.length === 0 && <option value="">未配置模型</option>}
+            {models.map((model) => (
+              <option key={model} value={model}>{model}</option>
+            ))}
           </select>
         </label>
         <label className="canvas-attachment-toggle" title="发送时保存当前 Canvas 的不可变快照">

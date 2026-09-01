@@ -60,7 +60,11 @@ class ProjectRegistry:
     def list(self) -> list[ProjectRecord]:
         with self._lock, self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM projects ORDER BY last_opened_at DESC, created_at DESC"
+                """
+                SELECT * FROM projects
+                WHERE is_registered = 1
+                ORDER BY last_opened_at DESC, created_at DESC
+                """
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
@@ -80,6 +84,7 @@ class ProjectRegistry:
                 FROM app_settings
                 JOIN projects ON projects.id = app_settings.value
                 WHERE app_settings.key = 'active_project_id'
+                  AND projects.is_registered = 1
                 """
             ).fetchone()
         if row is not None:
@@ -97,6 +102,10 @@ class ProjectRegistry:
             ).fetchone()
             if existing is not None:
                 project = self._from_row(existing)
+                connection.execute(
+                    "UPDATE projects SET is_registered = 1 WHERE id = ?",
+                    (project.id,),
+                )
                 self._activate(connection, project.id)
                 return self.get(project.id) or project
 
@@ -179,12 +188,48 @@ class ProjectRegistry:
         return self.register(target)
 
     def activate(self, project_id: str) -> ProjectRecord:
-        project = self.get(project_id)
-        if project is None:
-            raise KeyError(project_id)
         with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM projects WHERE id = ? AND is_registered = 1",
+                (project_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(project_id)
+            project = self._from_row(row)
             self._activate(connection, project_id)
         return self.get(project_id) or project
+
+    def remove(self, project_id: str) -> None:
+        """Remove a project from the selectable list without deleting its history or files."""
+        with self._lock, self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM projects WHERE id = ? AND is_registered = 1",
+                (project_id,),
+            ).fetchone()
+            if exists is None:
+                raise KeyError(project_id)
+            connection.execute(
+                "UPDATE projects SET is_registered = 0 WHERE id = ?",
+                (project_id,),
+            )
+            removed_active = connection.execute(
+                """
+                DELETE FROM app_settings
+                WHERE key = 'active_project_id' AND value = ?
+                """,
+                (project_id,),
+            ).rowcount
+            if removed_active:
+                fallback = connection.execute(
+                    """
+                    SELECT id FROM projects
+                    WHERE is_registered = 1
+                    ORDER BY last_opened_at DESC, created_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if fallback is not None:
+                    self._activate(connection, fallback["id"])
 
     def update(
         self,
@@ -286,6 +331,7 @@ class ProjectRegistry:
                   typecheck_command_json TEXT,
                   ignored_names_json TEXT,
                   prompt TEXT NOT NULL DEFAULT '',
+                  is_registered INTEGER NOT NULL DEFAULT 1,
                   created_at TEXT NOT NULL DEFAULT '',
                   updated_at TEXT NOT NULL DEFAULT '',
                   last_opened_at TEXT NOT NULL DEFAULT ''
@@ -308,6 +354,7 @@ class ProjectRegistry:
                 "typecheck_command_json": "TEXT",
                 "ignored_names_json": "TEXT",
                 "prompt": "TEXT NOT NULL DEFAULT ''",
+                "is_registered": "INTEGER NOT NULL DEFAULT 1",
                 "created_at": "TEXT NOT NULL DEFAULT ''",
                 "updated_at": "TEXT NOT NULL DEFAULT ''",
                 "last_opened_at": "TEXT NOT NULL DEFAULT ''",

@@ -17,6 +17,7 @@ describe("ProjectDialog", () => {
         onPickParent={() => Promise.resolve(null)}
         onRegisterPath={() => undefined}
         onCreate={() => undefined}
+        onRemove={() => undefined}
         onSave={() => undefined}
       />,
     );
@@ -55,11 +56,50 @@ describe("ProjectDialog", () => {
         onPickParent={() => Promise.resolve(null)}
         onRegisterPath={() => undefined}
         onCreate={() => undefined}
+        onRemove={() => undefined}
         onSave={() => undefined}
       />,
     );
 
     expect(html).toContain("项目设置");
     expect(html).toContain("命令配置");
+  });
+
+  it("offers to remove a project whose folder is unavailable", () => {
+    const html = renderToStaticMarkup(
+      <ProjectDialog
+        open
+        required
+        project={{
+          id: "project-missing",
+          name: "missing",
+          root_path: "E:\\missing",
+          relative_path: "",
+          test_command: null,
+          build_command: null,
+          lint_command: null,
+          typecheck_command: null,
+          ignored_names: [],
+          prompt: "",
+          created_at: "",
+          updated_at: "",
+          last_opened_at: "",
+          ready: false,
+        }}
+        busy={false}
+        error=""
+        onClose={() => undefined}
+        onPickExisting={() => undefined}
+        onPickParent={() => Promise.resolve(null)}
+        onRegisterPath={() => undefined}
+        onCreate={() => undefined}
+        onRemove={() => undefined}
+        onSave={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("原项目文件夹已无法访问");
+    expect(html).toContain("从列表中移除");
+    expect(html).toContain("E:\\missing");
   });
 });

@@ -32,6 +32,34 @@ def test_registry_registers_deduplicates_and_activates_projects(tmp_path: Path) 
     assert registry.get_active().id == first.id
 
 
+def test_registry_removes_project_from_list_without_deleting_history_or_files(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "runtime-data" / "intentflow.db"
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    registry = ProjectRegistry(database, tmp_path)
+    first = registry.register(first_root)
+    second = registry.register(second_root)
+
+    registry.remove(second.id)
+
+    assert [project.id for project in registry.list()] == [first.id]
+    assert registry.get(second.id) == second
+    assert registry.get_active() is not None
+    assert registry.get_active().id == first.id
+    assert second_root.is_dir()
+    with pytest.raises(KeyError):
+        registry.activate(second.id)
+
+    restored = registry.register(second_root)
+    assert restored.id == second.id
+    assert registry.get_active() is not None
+    assert registry.get_active().id == second.id
+
+
 def test_registry_rejects_missing_files_and_runtime_data(tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime-data"
     checkpoint = runtime_root / "runs" / "run-1" / "checkpoint"
@@ -205,6 +233,8 @@ async def test_project_api_registers_creates_and_switches_projects(
             },
         )
         projects = await client.get("/api/projects")
+        removed = await client.delete(f"/api/projects/{created.json()['id']}")
+        projects_after_remove = await client.get("/api/projects")
 
     assert empty.status_code == 200
     assert empty.json() is None
@@ -221,6 +251,8 @@ async def test_project_api_registers_creates_and_switches_projects(
     assert updated.json()["lint_command"] == ["npm", "run", "lint"]
     assert updated.json()["typecheck_command"] == ["npm", "run", "typecheck"]
     assert len(projects.json()) == 2
+    assert removed.status_code == 204
+    assert [item["id"] for item in projects_after_remove.json()] == [registered.json()["id"]]
 
 
 async def test_project_api_uses_native_picker_and_blocks_switch_during_message(

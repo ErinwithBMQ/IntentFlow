@@ -287,6 +287,7 @@ class RunManager:
         repository_root: Path,
         *,
         model_client_factory: Callable[[ToolRegistry], ModelClient] | None = None,
+        model_config_resolver: Callable[[], tuple[str, str, str | None]] | None = None,
         command_factory: Callable[[Path], dict[str, tuple[str, ...]]] | None = None,
         max_steps: int = DEFAULT_MAX_STEPS,
         workspace_service: WorkspaceService | None = None,
@@ -301,6 +302,7 @@ class RunManager:
         self.repository_root = repository_root.resolve()
         self.records: dict[str, RunRecord] = {}
         self.model_client_factory = model_client_factory
+        self.model_config_resolver = model_config_resolver
         self.command_factory = command_factory
         self.max_steps = max_steps
         self.workspace_service = workspace_service
@@ -327,7 +329,11 @@ class RunManager:
             raise RuntimeError("已有 Agent 任务正在运行，请等待完成或先停止它")
 
         if self.model_client_factory is None:
-            api_key, model, base_url = self._model_config()
+            api_key, model, base_url = (
+                self.model_config_resolver()
+                if self.model_config_resolver is not None
+                else self._model_config()
+            )
         else:
             api_key = model = ""
             base_url = None
