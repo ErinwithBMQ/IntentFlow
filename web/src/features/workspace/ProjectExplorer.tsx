@@ -27,15 +27,10 @@ export function ProjectExplorer({
     <aside className="file-panel">
       <div className="panel-heading">
         <span>项目文件</span>
-        <span className="stage-label">可编辑</span>
       </div>
       <div className="file-panel__content">
-        <p className="workspace-version-note">
-          打开文本文件即可编辑；待审查期间的手动保存会并入当前 Run。
-        </p>
         <WorkspaceRoot
           title="当前项目"
-          meta="实时文件"
           tree={projectTree}
           defaultExpanded
           activeFileKey={activeFileKey}
@@ -49,7 +44,6 @@ export function ProjectExplorer({
 
 type WorkspaceRootProps = {
   title: string;
-  meta: string;
   tree: WorkspaceTree | null;
   defaultExpanded: boolean;
   activeFileKey: string | null;
@@ -58,7 +52,6 @@ type WorkspaceRootProps = {
 
 function WorkspaceRoot({
   title,
-  meta,
   tree,
   defaultExpanded,
   activeFileKey,
@@ -76,7 +69,6 @@ function WorkspaceRoot({
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           <FolderOpen size={13} />{title}
         </span>
-        <small>{meta}</small>
       </button>
       {expanded && (tree ? (
         <div className="file-tree">

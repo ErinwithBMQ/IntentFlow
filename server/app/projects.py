@@ -19,6 +19,7 @@ from app.workspaces import DEFAULT_IGNORED_NAMES
 
 ProjectTemplate = Literal["empty", "web"]
 PROJECT_NAME_PATTERN = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+$")
+PROJECT_PROMPT_MAX_CHARACTERS = 20_000
 
 
 class ProjectRecord(BaseModel):
@@ -29,6 +30,7 @@ class ProjectRecord(BaseModel):
     test_command: list[str] | None = None
     build_command: list[str] | None = None
     ignored_names: list[str] = Field(default_factory=lambda: sorted(DEFAULT_IGNORED_NAMES))
+    prompt: str = Field(default="", max_length=PROJECT_PROMPT_MAX_CHARACTERS)
     created_at: str = ""
     updated_at: str = ""
     last_opened_at: str = ""
@@ -185,6 +187,7 @@ class ProjectRegistry:
         test_command: list[str] | None,
         build_command: list[str] | None,
         ignored_names: list[str],
+        prompt: str | None = None,
     ) -> ProjectRecord:
         project = self.get(project_id)
         if project is None:
@@ -202,13 +205,16 @@ class ProjectRegistry:
         )
         clean_test = _validate_command(test_command)
         clean_build = _validate_command(build_command)
+        clean_prompt = project.prompt if prompt is None else prompt.strip()
+        if len(clean_prompt) > PROJECT_PROMPT_MAX_CHARACTERS:
+            raise ProjectRegistrationError("项目 Prompt 不能超过 20000 个字符")
         now = _now()
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
                 UPDATE projects
                 SET name = ?, test_command_json = ?, build_command_json = ?,
-                    ignored_names_json = ?, updated_at = ?
+                    ignored_names_json = ?, prompt = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -216,6 +222,7 @@ class ProjectRegistry:
                     _json_or_none(clean_test),
                     _json_or_none(clean_build),
                     json.dumps(clean_ignored, ensure_ascii=False),
+                    clean_prompt,
                     now,
                     project_id,
                 ),
@@ -262,6 +269,7 @@ class ProjectRegistry:
                   test_command_json TEXT,
                   build_command_json TEXT,
                   ignored_names_json TEXT,
+                  prompt TEXT NOT NULL DEFAULT '',
                   created_at TEXT NOT NULL DEFAULT '',
                   updated_at TEXT NOT NULL DEFAULT '',
                   last_opened_at TEXT NOT NULL DEFAULT ''
@@ -281,6 +289,7 @@ class ProjectRegistry:
                 "test_command_json": "TEXT",
                 "build_command_json": "TEXT",
                 "ignored_names_json": "TEXT",
+                "prompt": "TEXT NOT NULL DEFAULT ''",
                 "created_at": "TEXT NOT NULL DEFAULT ''",
                 "updated_at": "TEXT NOT NULL DEFAULT ''",
                 "last_opened_at": "TEXT NOT NULL DEFAULT ''",
@@ -371,6 +380,7 @@ class ProjectRegistry:
             test_command=_load_command(row["test_command_json"]),
             build_command=_load_command(row["build_command_json"]),
             ignored_names=_load_ignored(row["ignored_names_json"]),
+            prompt=row["prompt"] or "",
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             last_opened_at=row["last_opened_at"],

@@ -284,12 +284,15 @@ def test_session_context_exposes_authoritative_review_and_approval_facts(tmp_pat
         session.id,
         current,
         permission_policy="ask",
+        project_prompt="默认使用中文，并优先复用现有组件。",
     )
 
     assert envelope.current_request.content == "我刚才选择了什么？"
     assert envelope.run_ledger[0].review_status == "discarded"
     assert envelope.run_ledger[0].changes_applied_to_project is False
     assert envelope.run_ledger[0].approval_decisions == ["apply_patch:rejected:reject"]
+    assert envelope.project_prompt == "默认使用中文，并优先复用现有组件。"
+    assert "默认使用中文，并优先复用现有组件。" in envelope.to_prompt_text()
     assert "discarded" in envelope.to_prompt_text()
 
 
@@ -468,6 +471,7 @@ class StubResponder:
         assert canvas is not None
         assert "Project:" in project_context
         assert "Authoritative IntentFlow session context" in session_context
+        assert "默认使用中文，并优先复用现有组件。" in session_context
         return "这是一个可验证的 Todo Agent 示例。"
 
 
@@ -476,6 +480,16 @@ async def test_session_api_creates_and_restores_ask_messages(tmp_path, monkeypat
     project_root.mkdir(parents=True)
     store = make_store(tmp_path / "intentflow.db")
     registry = ProjectRegistry(tmp_path / "intentflow.db", tmp_path)
+    project = registry.get("todo-demo")
+    assert project is not None
+    registry.update(
+        project.id,
+        name=project.name,
+        test_command=project.test_command,
+        build_command=project.build_command,
+        ignored_names=project.ignored_names,
+        prompt="默认使用中文，并优先复用现有组件。",
+    )
     monkeypatch.setattr(main_module, "session_store", store)
     monkeypatch.setattr(main_module, "project_registry", registry)
     monkeypatch.setattr(main_module, "create_conversation_responder", lambda: StubResponder())

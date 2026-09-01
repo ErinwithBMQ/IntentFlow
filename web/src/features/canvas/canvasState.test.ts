@@ -14,7 +14,6 @@ describe("toIntentCanvas", () => {
     const canvas = toIntentCanvas(
       DEFAULT_CANVAS_NODES,
       DEFAULT_CANVAS_EDGES,
-      "还有一句补充说明",
     );
 
     expect(canvas.notes[0]).toMatchObject({
@@ -23,21 +22,18 @@ describe("toIntentCanvas", () => {
       position: { x: 100, y: 110 },
     });
     expect(canvas.connections[0]).toMatchObject({ label: "拆分为" });
-    expect(canvas.supplemental_text).toBe("还有一句补充说明");
+    expect(canvas.supplemental_text).toBe("");
   });
 
   it("restores a persisted canvas into editable React Flow state", () => {
-    const canvas = toIntentCanvas(
-      DEFAULT_CANVAS_NODES,
-      DEFAULT_CANVAS_EDGES,
-      "会话自己的补充说明",
-    );
+    const canvas = toIntentCanvas(DEFAULT_CANVAS_NODES, DEFAULT_CANVAS_EDGES);
+    canvas.supplemental_text = "旧快照中的补充说明";
 
     const restored = fromIntentCanvas(canvas);
 
     expect(restored.nodes).toEqual(DEFAULT_CANVAS_NODES);
     expect(restored.edges).toEqual(DEFAULT_CANVAS_EDGES);
-    expect(restored.supplementalText).toBe("会话自己的补充说明");
+    expect(restored).not.toHaveProperty("supplementalText");
   });
 });
 

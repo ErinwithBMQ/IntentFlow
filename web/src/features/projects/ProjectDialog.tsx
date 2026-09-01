@@ -41,6 +41,7 @@ export function ProjectDialog({
   const [testCommand, setTestCommand] = useState("");
   const [buildCommand, setBuildCommand] = useState("");
   const [ignoredNames, setIgnoredNames] = useState("");
+  const [projectPrompt, setProjectPrompt] = useState("");
 
   useEffect(() => {
     if (!project) return;
@@ -48,6 +49,7 @@ export function ProjectDialog({
     setTestCommand(commandToText(project.test_command));
     setBuildCommand(commandToText(project.build_command));
     setIgnoredNames(project.ignored_names.join(", "));
+    setProjectPrompt(project.prompt);
   }, [project]);
 
   if (!open) return null;
@@ -65,6 +67,7 @@ export function ProjectDialog({
       test_command: textToCommand(testCommand),
       build_command: textToCommand(buildCommand),
       ignored_names: ignoredNames.split(",").map((item) => item.trim()).filter(Boolean),
+      prompt: projectPrompt.trim(),
     });
   }
 
@@ -188,6 +191,16 @@ export function ProjectDialog({
             <label>
               显示名称
               <input value={settingsName} onChange={(event) => setSettingsName(event.target.value)} />
+            </label>
+            <label>
+              项目 Prompt
+              <textarea
+                rows={5}
+                maxLength={20000}
+                value={projectPrompt}
+                placeholder="例如：默认使用中文回复；修改前先阅读项目约定；保持现有代码风格。"
+                onChange={(event) => setProjectPrompt(event.target.value)}
+              />
             </label>
             <label>
               测试命令参数

@@ -12,7 +12,6 @@ export type NoteNode = Node<NoteData, "note">;
 export type StoredCanvas = {
   nodes: NoteNode[];
   edges: Edge[];
-  supplementalText: string;
 };
 
 export const DEFAULT_CANVAS_NODES: NoteNode[] = [
@@ -60,7 +59,6 @@ export const DEFAULT_CANVAS_EDGES: Edge[] = [
 export function toIntentCanvas(
   nodes: NoteNode[],
   edges: Edge[],
-  supplementalText: string,
 ): IntentCanvas {
   return {
     notes: nodes.map((node) => ({
@@ -75,7 +73,7 @@ export function toIntentCanvas(
       target: edge.target,
       label: typeof edge.label === "string" ? edge.label : "",
     })),
-    supplemental_text: supplementalText,
+    supplemental_text: "",
   };
 }
 
@@ -93,7 +91,6 @@ export function fromIntentCanvas(canvas: IntentCanvas): StoredCanvas {
       target: connection.target,
       label: connection.label,
     })),
-    supplementalText: canvas.supplemental_text,
   };
 }
 
@@ -102,8 +99,7 @@ export function isStoredCanvas(value: unknown): value is StoredCanvas {
   const candidate = value as Record<string, unknown>;
   return (
     Array.isArray(candidate.nodes) &&
-    Array.isArray(candidate.edges) &&
-    typeof candidate.supplementalText === "string"
+    Array.isArray(candidate.edges)
   );
 }
 

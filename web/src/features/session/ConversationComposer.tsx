@@ -21,11 +21,6 @@ type ConversationComposerProps = {
   onInterrupt: () => void;
 };
 
-const approvalDescriptions: Record<ApprovalMode, string> = {
-  ask: "修改前请求批准",
-  auto: "自动允许受控修改，完成后仍可撤销",
-};
-
 export function ConversationComposer({
   value,
   approvalMode,
@@ -34,7 +29,6 @@ export function ConversationComposer({
   sending,
   activityRunning,
   interrupting,
-  pendingReviewNotice,
   error,
   onChange,
   onApprovalModeChange,
@@ -45,13 +39,6 @@ export function ConversationComposer({
 }: ConversationComposerProps) {
   const canInterrupt = sending || activityRunning;
   const submitDisabled = canInterrupt || !value.trim();
-  const hint = interrupting
-    ? "正在中断当前处理…"
-    : sending
-      ? "Agent 正在读取会话并判断下一步…"
-      : activityRunning
-        ? "Agent 正在执行，点击右侧方形按钮可中断"
-        : pendingReviewNotice || approvalDescriptions[approvalMode];
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -129,10 +116,6 @@ export function ConversationComposer({
             {canInterrupt ? <Square size={13} fill="currentColor" /> : <Send size={14} />}
           </button>
         </div>
-      </div>
-      <div className="conversation-composer__hint">
-        <span>{hint}</span>
-        <span>Enter 发送 · Shift+Enter 换行</span>
       </div>
       {error && <p className="conversation-composer__error">{error}</p>}
     </div>

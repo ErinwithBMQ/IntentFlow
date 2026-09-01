@@ -136,6 +136,7 @@ class UpdateProjectRequest(BaseModel):
     test_command: list[str] | None = None
     build_command: list[str] | None = None
     ignored_names: list[str] = Field(default_factory=list)
+    prompt: str | None = Field(default=None, max_length=20_000)
 
 
 class SendSessionMessageRequest(BaseModel):
@@ -267,6 +268,7 @@ async def update_project(
             test_command=request.test_command,
             build_command=request.build_command,
             ignored_names=request.ignored_names,
+            prompt=request.prompt,
         )
         return project_response(project)
     except KeyError as error:
@@ -369,6 +371,7 @@ async def _process_session_message(
         session_id,
         user_message,
         permission_policy=approval_mode,
+        project_prompt=project.prompt,
     ).to_prompt_text()
     project_context = build_project_context(
         Path(project.root_path),

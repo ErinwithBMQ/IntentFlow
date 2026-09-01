@@ -24,6 +24,7 @@ import {
   sendSessionMessage,
   stopRun,
   undoRun,
+  updateProject,
   updateProjectFile,
   type IntentCanvas,
 } from "./api";
@@ -55,6 +56,38 @@ describe("getHealth", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 503 })));
 
     await expect(getHealth()).rejects.toThrow("请求失败：503");
+  });
+
+  it("sends the project prompt when updating project settings", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "project-1", prompt: "默认使用中文。" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateProject("project-1", {
+      name: "demo",
+      test_command: null,
+      build_command: null,
+      ignored_names: ["node_modules"],
+      prompt: "默认使用中文。",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({
+          name: "demo",
+          test_command: null,
+          build_command: null,
+          ignored_names: ["node_modules"],
+          prompt: "默认使用中文。",
+        }),
+      }),
+    );
   });
 
   it("sends the free canvas to the intent compiler", async () => {

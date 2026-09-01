@@ -47,7 +47,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .panel-heading { height: 44px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e4e3de; font-size: 14px; font-weight: 600; }
 .session-heading { gap: 7px; }
 .session-heading select { min-width: 0; flex: 1; border: 0; color: #333a36; background: transparent; font-size: 12px; font-weight: 600; text-overflow: ellipsis; }
-.session-project { max-width: 92px; overflow: hidden; color: #8b908c; font: 9px var(--font-code); text-overflow: ellipsis; white-space: nowrap; }
 .session-heading > button { width: 28px; height: 28px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid #deddd7; border-radius: 4px; color: #626965; background: #f7f6f2; cursor: pointer; }
 .session-heading .run-state { flex: 0 0 auto; }
 .stage-label, .run-state { color: #8b908c; font-size: 12px; font-weight: 500; text-transform: uppercase; }
@@ -68,6 +67,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .react-flow__edge-path { stroke: #9ca19d; stroke-width: 1.5; }
 .react-flow__edge-text { fill: #6b716d; font-size: 12px; }
 .react-flow__edge-textbg { fill: #fbfaf7; }
+.react-flow__edge.selected .react-flow__edge-path { stroke: #3b6cff; stroke-width: 2; }
+.editable-edge-label, .inline-edge-editor { position: absolute; pointer-events: all; }
+.editable-edge-label { padding: 2px 5px; border-radius: 3px; color: #6b716d; background: #fbfaf7; font-size: 12px; white-space: nowrap; cursor: text; }
+.inline-edge-editor { min-width: 64px; max-width: 220px; display: inline-grid; }
+.inline-edge-editor__measure, .inline-edge-editor input { grid-area: 1 / 1; font-size: 12px; }
+.inline-edge-editor__measure { min-width: 64px; max-width: 220px; padding: 0 26px 0 8px; overflow: hidden; visibility: hidden; white-space: pre; }
+.inline-edge-editor input { width: 100%; min-width: 0; height: 28px; padding: 0 24px 0 7px; border: 1px solid #8198df; border-radius: 4px; color: #252b27; background: #fffefa; box-shadow: 0 3px 12px rgb(45 49 46 / 14%); }
+.inline-edge-editor button { position: absolute; top: -7px; right: -7px; width: 18px; height: 18px; padding: 0; display: grid; place-items: center; border: 1px solid #d6aaa5; border-radius: 50%; color: #a33f35; background: #fff5f3; font-size: 14px; line-height: 1; cursor: pointer; }
+.inline-edge-editor button:hover { color: #fff; background: #b94a3e; }
 .react-flow__node { width: 220px; }
 .react-flow__node.selected .note-node { border-color: #3b6cff; box-shadow: 0 0 0 3px rgb(59 108 255 / 12%); }
 .note-node { width: 220px; border: 1px solid #d4d3cd; border-radius: 6px; background: #fffefa; box-shadow: 0 8px 22px rgb(45 49 46 / 8%); }
@@ -275,15 +283,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .requirement-result details small { color: #238a5a; }
 .statusbar { gap: 12px; padding: 0 14px; border-top: 1px solid #d9d8d2; border-bottom: 0; color: #6b716d; background: #f5f3ee; font: 12px var(--font-code); }
 .statusbar-divider { width: 1px; height: 13px; background: #d9d8d2; }
-.statusbar-spacer { flex: 1; }
 
 .file-panel__content { height: calc(100% - 44px); padding: 8px 0 18px; overflow-y: auto; }
 .file-panel__error { margin: 10px; padding: 8px; border-left: 2px solid #c4473a; color: #963d34; background: #fff4f2; font-size: 12px; line-height: 1.5; }
 .workspace-root { margin: 0 8px 8px; border-bottom: 1px solid #e4e3de; }
-.workspace-version-note { margin: 2px 10px 9px; padding: 8px; border-left: 2px solid #6f8ae6; color: #777d79; background: #f2f5ff; font-size: 11px; line-height: 1.55; }
 .workspace-root__heading { width: 100%; height: 34px; padding: 0 5px; display: flex; align-items: center; justify-content: space-between; border: 0; color: #525955; background: transparent; cursor: pointer; }
 .workspace-root__heading > span { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
-.workspace-root__heading small { color: #9a9e9b; font: 10px var(--font-code); }
 .file-tree { padding-bottom: 8px; }
 .file-tree__row { width: 100%; min-height: 30px; padding: 4px 7px 4px 0; display: flex; align-items: center; gap: 5px; border: 0; color: #626965; background: transparent; font-size: 12px; text-align: left; cursor: pointer; }
 .file-tree__row:hover { color: #27302b; background: #f0efea; }
@@ -340,11 +345,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .canvas-toolbar--proposal { justify-content: space-between; color: #315bb5; font-size: 12px; font-weight: 600; }
 .canvas-toolbar__actions { display: flex; gap: 7px; }
 .canvas-toolbar--proposal .canvas-toolbar__actions button:first-child { border-color: #315bb5; color: #fff; background: #315bb5; }
-.canvas-toolbar label { height: 33px; display: flex; align-items: center; gap: 6px; color: #777d79; font-size: 11px; white-space: nowrap; }
-.canvas-toolbar label span { display: flex; align-items: center; gap: 4px; }
-.canvas-toolbar input { width: 118px; height: 31px; padding: 0 7px; border: 1px solid #deddd7; border-radius: 4px; color: #333a36; background: #fff; font-size: 12px; }
-.canvas-toolbar__supplement { min-width: 150px; flex: 1; }
-.canvas-toolbar__supplement input { min-width: 100px; width: 100%; }
 
 .code-workspace { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); background: #fffefa; }
 .file-tabs { min-height: 34px; display: flex; overflow-x: auto; border-bottom: 1px solid #deddd7; background: #f5f4ef; }

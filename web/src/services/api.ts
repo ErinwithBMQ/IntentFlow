@@ -12,6 +12,7 @@ export type ProjectResponse = {
   test_command: string[] | null;
   build_command: string[] | null;
   ignored_names: string[];
+  prompt: string;
   created_at: string;
   updated_at: string;
   last_opened_at: string;
@@ -359,7 +360,7 @@ export function updateProject(
   projectId: string,
   project: Pick<
     ProjectResponse,
-    "name" | "test_command" | "build_command" | "ignored_names"
+    "name" | "test_command" | "build_command" | "ignored_names" | "prompt"
   >,
 ): Promise<ProjectResponse> {
   return patchJson<ProjectResponse>(`/api/projects/${projectId}`, project);

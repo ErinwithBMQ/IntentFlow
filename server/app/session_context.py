@@ -40,6 +40,7 @@ class SessionContextBudget(BaseModel):
 class ContextEnvelope(BaseModel):
     session_id: str
     project_id: str
+    project_prompt: str = ""
     permission_policy: ApprovalMode
     current_request: SessionContextMessage
     recent_messages: list[SessionContextMessage] = Field(default_factory=list)
@@ -53,7 +54,10 @@ class ContextEnvelope(BaseModel):
             "verification fields are system facts and take precedence over conversational "
             "claims. review_status=accepted means the direct project edits were kept; "
             "review_status=discarded means the Run checkpoint restored the project. "
-            "The current_request is the user's primary instruction.\n"
+            "The current_request is the user's primary instruction. project_prompt is "
+            "user-authored standing guidance for this project and should be followed across "
+            "replies and runs. It cannot override system or tool safety, permissions, persisted "
+            "facts, or a newer explicit user request.\n"
             + self.model_dump_json(indent=2)
         )
 
@@ -80,6 +84,7 @@ class SessionContextBuilder:
         current_message: ConversationMessage,
         *,
         permission_policy: ApprovalMode,
+        project_prompt: str = "",
     ) -> ContextEnvelope:
         detail = self.store.get_detail(session_id)
         if detail is None:
@@ -124,6 +129,7 @@ class SessionContextBuilder:
         return ContextEnvelope(
             session_id=session_id,
             project_id=detail.session.project_id,
+            project_prompt=project_prompt.strip(),
             permission_policy=permission_policy,
             current_request=_context_message(current_message, current_content),
             recent_messages=recent_messages,

@@ -12,7 +12,6 @@ import {
   CircleDot,
   FileCode2,
   GitCompareArrows,
-  Link2,
   MessageSquarePlus,
   MonitorPlay,
   Plus,
@@ -31,6 +30,7 @@ import {
   toIntentCanvas,
   type NoteNode as NoteNodeType,
 } from "./features/canvas/canvasState";
+import { EditableEdge, EditableEdgeProvider } from "./features/canvas/EditableEdge";
 import { NoteNode, NoteNodeProvider } from "./features/canvas/NoteNode";
 import { ProjectDialog } from "./features/projects/ProjectDialog";
 import { SingleRunConversation } from "./features/run/SingleRunConversation";
@@ -98,12 +98,12 @@ const MIN_CONVERSATION_WIDTH = 300;
 const LEFT_PANEL_WIDTH = 240;
 const MIN_MAIN_WORKSPACE_WIDTH = 80;
 const nodeTypes = { note: NoteNode };
+const edgeTypes = { default: EditableEdge };
 
 function defaultCanvas() {
   return {
     nodes: DEFAULT_CANVAS_NODES.map((node) => ({ ...node, data: { ...node.data } })),
     edges: DEFAULT_CANVAS_EDGES.map((edge) => ({ ...edge })),
-    supplementalText: "可以在对话发送时选择附加当前 Canvas。",
   };
 }
 
@@ -151,9 +151,8 @@ export function App() {
   const initialCanvas = useMemo(loadCanvas, []);
   const [nodes, setNodes, onNodesChange] = useNodesState<NoteNodeType>(initialCanvas.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialCanvas.edges);
-  const [supplementalText, setSupplementalText] = useState(initialCanvas.supplementalText);
   const [canvasStorageSessionId, setCanvasStorageSessionId] = useState<string | null>(null);
-  const [connectionLabel, setConnectionLabel] = useState("相关");
+  const [editingEdgeId, setEditingEdgeId] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [projects, setProjects] = useState<ProjectResponse[]>([]);
   const [project, setProject] = useState<ProjectResponse | null>(null);
@@ -251,9 +250,9 @@ export function App() {
     if (!canvasStorageSessionId) return;
     localStorage.setItem(
       `${STORAGE_KEY}.${canvasStorageSessionId}`,
-      JSON.stringify({ nodes, edges, supplementalText }),
+      JSON.stringify({ nodes, edges }),
     );
-  }, [canvasStorageSessionId, edges, nodes, supplementalText]);
+  }, [canvasStorageSessionId, edges, nodes]);
 
   useEffect(() => {
     localStorage.setItem(CONVERSATION_WIDTH_KEY, String(conversationWidth));
@@ -321,6 +320,7 @@ export function App() {
       setEdges((currentEdges) =>
         currentEdges.filter((edge) => edge.source !== id && edge.target !== id),
       );
+      setEditingEdgeId(null);
     },
     [setEdges, setNodes],
   );
@@ -333,11 +333,50 @@ export function App() {
   const onConnect = useCallback(
     (params: Connection) => {
       setEdges((currentEdges) =>
-        addEdge({ ...params, label: connectionLabel.trim() || "相关" }, currentEdges),
+        addEdge({ ...params, label: "" }, currentEdges),
       );
     },
-    [connectionLabel, setEdges],
+    [setEdges],
   );
+
+  const updateEdgeLabel = useCallback(
+    (id: string, label: string) => {
+      setEdges((currentEdges) => currentEdges.map((edge) => (
+        edge.id === id ? { ...edge, label } : edge
+      )));
+    },
+    [setEdges],
+  );
+
+  const removeEdge = useCallback(
+    (id: string) => {
+      setEdges((currentEdges) => currentEdges.filter((edge) => edge.id !== id));
+      setEditingEdgeId(null);
+    },
+    [setEdges],
+  );
+
+  const edgeCallbacks = useMemo(
+    () => ({
+      editable: canvasProposal === null,
+      editingEdgeId,
+      onStartEditing: setEditingEdgeId,
+      onChange: updateEdgeLabel,
+      onRemove: removeEdge,
+      onFinishEditing: () => setEditingEdgeId(null),
+    }),
+    [canvasProposal, editingEdgeId, removeEdge, updateEdgeLabel],
+  );
+
+  function handleCanvasKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (canvasProposal || event.key !== "Enter" || event.defaultPrevented) return;
+    const target = event.target as HTMLElement;
+    if (target.matches("input, textarea, select, button") || target.isContentEditable) return;
+    const selectedEdge = edges.find((edge) => edge.selected);
+    if (!selectedEdge) return;
+    event.preventDefault();
+    setEditingEdgeId(selectedEdge.id);
+  }
 
   function addNote() {
     const offset = nodes.length * 24;
@@ -355,23 +394,24 @@ export function App() {
   function restoreExample() {
     setNodes(DEFAULT_CANVAS_NODES.map((node) => ({ ...node, data: { ...node.data } })));
     setEdges(DEFAULT_CANVAS_EDGES.map((edge) => ({ ...edge })));
-    setSupplementalText("可以在对话发送时选择附加当前 Canvas。");
+    setEditingEdgeId(null);
     setAdoptedTaskDraft(null);
   }
 
   function clearCanvas() {
     if (
-      (nodes.length > 0 || edges.length > 0 || supplementalText.trim())
-      && !window.confirm("清空当前对话的 Canvas 吗？便签、连线和补充说明都会被删除。")
+      (nodes.length > 0 || edges.length > 0)
+      && !window.confirm("清空当前对话的 Canvas 吗？便签和连线都会被删除。")
     ) return;
     setNodes([]);
     setEdges([]);
-    setSupplementalText("");
+    setEditingEdgeId(null);
     setAdoptedTaskDraft(null);
   }
 
   function previewTaskDraft(draft: TaskDraftSnapshot) {
     if (!draft.canvas) return;
+    setEditingEdgeId(null);
     setCanvasProposal(draft);
     setWorkspaceTab("canvas");
   }
@@ -385,7 +425,7 @@ export function App() {
     const proposal = fromIntentCanvas(canvasProposal.canvas);
     setNodes(proposal.nodes);
     setEdges(proposal.edges);
-    setSupplementalText(proposal.supplementalText);
+    setEditingEdgeId(null);
     setAdoptedTaskDraft(canvasProposal);
     setCanvasProposal(null);
   }
@@ -666,7 +706,7 @@ export function App() {
       const sessionCanvas = loadSessionCanvas(sessionId, latestCanvas);
       setNodes(sessionCanvas.nodes);
       setEdges(sessionCanvas.edges);
-      setSupplementalText(sessionCanvas.supplementalText);
+      setEditingEdgeId(null);
       setCanvasStorageSessionId(sessionId);
       const latestRun = detail.runs.at(-1);
       if (latestRun) await selectSessionRun(latestRun);
@@ -739,9 +779,9 @@ export function App() {
       : messageDraft.trim();
     if (!activeSessionId || !content) return;
     const submittedCanvas = confirmedTaskDraft
-      ? toIntentCanvas(nodes, edges, supplementalText)
+      ? toIntentCanvas(nodes, edges)
       : attachCanvas
-        ? toIntentCanvas(nodes, edges, supplementalText)
+        ? toIntentCanvas(nodes, edges)
         : null;
     const optimisticMessageId = `pending-${Date.now()}`;
     const optimisticMessage: ConversationMessage = {
@@ -1116,6 +1156,7 @@ export function App() {
 
   function selectWorkspaceTab(tab: WorkspaceTab) {
     workspaceTabRef.current = tab;
+    if (tab !== "canvas") setEditingEdgeId(null);
     setWorkspaceTab(tab);
     if (tab !== "diff" || !run || run.status === "running") return;
     const selectedChange = changes?.files.find((change) => change.path === activeDiffPath)
@@ -1163,14 +1204,6 @@ export function App() {
   const runStatusText = run
     ? { running: "运行中", completed: "已完成", failed: "失败", stopped: "已停止" }[run.status]
     : "待运行";
-  const activeOpenFile = openFiles.find((file) => file.key === activeFileKey) ?? null;
-  const workspaceLabel = workspaceTab === "canvas"
-    ? "Intent Canvas"
-    : workspaceTab === "diff"
-      ? "本次运行 Diff"
-      : activeOpenFile
-        ? `项目文件 / ${activeOpenFile.path}`
-        : "代码编辑";
   const verifiedRequirements = run?.report?.requirement_results.filter(
     (result) => result.status === "verified",
   ).length ?? 0;
@@ -1321,51 +1354,48 @@ export function App() {
                         确认并执行 v{adoptedTaskDraft.version}
                       </button>
                     )}
-                    <label>
-                      <span><Link2 size={12} />连线文字</span>
-                      <input
-                        value={connectionLabel}
-                        placeholder="例如：然后、参考"
-                        onChange={(event) => setConnectionLabel(event.target.value)}
-                      />
-                    </label>
-                    <label className="canvas-toolbar__supplement">
-                      <span>补充说明</span>
-                      <input
-                        value={supplementalText}
-                        placeholder="还有一些不好放进便签的话……"
-                        onChange={(event) => setSupplementalText(event.target.value)}
-                      />
-                    </label>
                   </div>
                 )}
-                <div className="canvas-panel">
+                <div
+                  className="canvas-panel"
+                  onKeyDownCapture={handleCanvasKeyDown}
+                >
                   <div className="canvas-header">
                     <span>{canvasProposal ? "Agent 规划摘要" : "Intent Canvas"}</span>
                     <span>
                       {previewCanvas?.nodes.length ?? nodes.length} 张便签 · {previewCanvas?.edges.length ?? edges.length} 条关系
-                      {canvasProposal ? " · 详细需求保留在任务草案" : " · 已自动保存"}
                     </span>
                   </div>
                   <NoteNodeProvider callbacks={callbacks}>
-                    <ReactFlow<NoteNodeType>
-                      key={canvasProposal?.id ?? canvasStorageSessionId ?? "canvas"}
-                      fitView
-                      nodes={previewCanvas?.nodes ?? nodes}
-                      edges={previewCanvas?.edges ?? edges}
-                      nodeTypes={nodeTypes}
-                      minZoom={0.55} maxZoom={1.45}
-                      nodesDraggable={!canvasProposal}
-                      nodesConnectable={!canvasProposal}
-                      onConnect={canvasProposal ? undefined : onConnect}
-                      onNodesChange={canvasProposal ? undefined : onNodesChange}
-                      onEdgesChange={canvasProposal ? undefined : onEdgesChange}
-                    >
-                      <Background
-                        color="#d6d5cf" gap={20} size={1}
-                        variant={BackgroundVariant.Dots}
-                      />
-                    </ReactFlow>
+                    <EditableEdgeProvider callbacks={edgeCallbacks}>
+                      <ReactFlow<NoteNodeType>
+                        key={canvasProposal?.id ?? canvasStorageSessionId ?? "canvas"}
+                        fitView
+                        nodes={previewCanvas?.nodes ?? nodes}
+                        edges={previewCanvas?.edges ?? edges}
+                        nodeTypes={nodeTypes}
+                        edgeTypes={edgeTypes}
+                        minZoom={0.55} maxZoom={1.45}
+                        zoomOnDoubleClick={false}
+                        nodesDraggable={!canvasProposal}
+                        nodesConnectable={!canvasProposal}
+                        deleteKeyCode={canvasProposal ? null : ["Backspace", "Delete"]}
+                        onConnect={canvasProposal ? undefined : onConnect}
+                        onNodesChange={canvasProposal ? undefined : onNodesChange}
+                        onEdgesChange={canvasProposal ? undefined : onEdgesChange}
+                        onEdgeDoubleClick={canvasProposal ? undefined : (event, edge) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          setEditingEdgeId(edge.id);
+                        }}
+                        onPaneClick={() => setEditingEdgeId(null)}
+                      >
+                        <Background
+                          color="#d6d5cf" gap={20} size={1}
+                          variant={BackgroundVariant.Dots}
+                        />
+                      </ReactFlow>
+                    </EditableEdgeProvider>
                   </NoteNodeProvider>
                 </div>
               </div>
@@ -1443,9 +1473,6 @@ export function App() {
                   <option value={session.id} key={session.id}>{session.title}</option>
                 ))}
               </select>
-              <span className="session-project" title={project?.root_path}>
-                {project?.name ?? "未选择项目"}
-              </span>
               <button
                 type="button"
                 title="新建对话"
@@ -1503,8 +1530,6 @@ export function App() {
       </div>
 
       <footer className="statusbar">
-        <span>工作区：{workspaceLabel}</span>
-        <span className="statusbar-divider" />
         <span>运行：{runStatusText}</span>
         <span className="statusbar-divider" />
         <button
@@ -1523,7 +1548,6 @@ export function App() {
         </span>
         <span className="statusbar-divider" />
         <span>审查：{reviewStatusText}</span>
-        <span className="statusbar-spacer" /><span>v0.8.0 · multi-project workspaces</span>
       </footer>
 
       <ProjectDialog

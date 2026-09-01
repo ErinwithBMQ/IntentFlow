@@ -63,6 +63,7 @@ def test_registry_migrates_the_legacy_relative_project(tmp_path: Path) -> None:
     assert migrated is not None
     assert Path(migrated.root_path) == project_root
     assert migrated.relative_path == "examples/todo-demo"
+    assert migrated.prompt == ""
 
 
 def test_registry_creates_a_dependency_free_web_template(tmp_path: Path) -> None:
@@ -90,6 +91,7 @@ def test_registry_updates_safe_command_and_ignore_configuration(tmp_path: Path) 
         test_command=["python", "-m", "pytest"],
         build_command=None,
         ignored_names=["generated", "nested/path"],
+        prompt="默认使用中文，并保持现有代码风格。",
     )
 
     assert updated.name == "Renamed"
@@ -98,6 +100,8 @@ def test_registry_updates_safe_command_and_ignore_configuration(tmp_path: Path) 
     assert "generated" in updated.ignored_names
     assert "nested/path" not in updated.ignored_names
     assert "node_modules" in updated.ignored_names
+    assert updated.prompt == "默认使用中文，并保持现有代码风格。"
+    assert ProjectRegistry(registry.database_path, tmp_path).get(project.id) == updated
 
 
 async def test_project_api_registers_creates_and_switches_projects(
@@ -139,6 +143,16 @@ async def test_project_api_registers_creates_and_switches_projects(
         switched = await client.post(
             f"/api/projects/{registered.json()['id']}/activate"
         )
+        updated = await client.patch(
+            f"/api/projects/{registered.json()['id']}",
+            json={
+                "name": "Existing",
+                "test_command": None,
+                "build_command": None,
+                "ignored_names": [],
+                "prompt": "所有回复使用中文。",
+            },
+        )
         projects = await client.get("/api/projects")
 
     assert empty.status_code == 200
@@ -151,6 +165,8 @@ async def test_project_api_registers_creates_and_switches_projects(
     assert [item["id"] for item in first_sessions.json()] == [first_session.json()["id"]]
     assert switched.status_code == 200
     assert switched.json()["id"] == registered.json()["id"]
+    assert updated.status_code == 200
+    assert updated.json()["prompt"] == "所有回复使用中文。"
     assert len(projects.json()) == 2
 
 
