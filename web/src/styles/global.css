@@ -322,6 +322,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .project-dialog > nav button { height: 38px; padding: 0 10px; border: 0; border-bottom: 2px solid transparent; color: #777d79; background: transparent; font-size: 12px; cursor: pointer; }
 .project-dialog > nav .project-dialog__tab--active { border-bottom-color: #3b6cff; color: #244bb5; font-weight: 600; }
 .project-dialog__body { padding: 20px 22px 22px; display: grid; gap: 14px; }
+.project-dialog__command-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .project-dialog__hero { padding: 14px; display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: center; gap: 10px; border: 1px solid #dbe2fa; border-radius: 7px; color: #315bb5; background: #f4f6ff; }
 .project-dialog__hero strong { color: #333a36; font-size: 13px; }
 .project-dialog__hero p, .project-dialog__note { margin: 4px 0 0; color: #777d79; font-size: 11px; line-height: 1.55; }
@@ -335,6 +336,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .project-dialog__divider { display: flex; align-items: center; gap: 10px; color: #9a9e9b; font-size: 10px; }
 .project-dialog__divider::before, .project-dialog__divider::after { content: ""; height: 1px; flex: 1; background: #e3e2dc; }
 .project-dialog__error { margin: 0 22px 20px; padding: 9px 10px; border-left: 2px solid #c4473a; color: #963d34; background: #fff4f2; font-size: 11px; line-height: 1.5; }
+
+@media (max-width: 600px) {
+  .project-dialog__command-grid { grid-template-columns: 1fr; }
+}
 
 .canvas-workspace { height: 100%; min-height: 0; display: grid; grid-template-rows: 48px minmax(0, 1fr); }
 .canvas-toolbar { padding: 7px 10px; display: flex; align-items: center; gap: 7px; border-bottom: 1px solid #e4e3de; background: #fffefa; }

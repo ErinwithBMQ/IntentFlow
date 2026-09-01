@@ -755,6 +755,8 @@ class RunManager:
         for name, configured in (
             ("test", project.test_command),
             ("build", project.build_command),
+            ("lint", project.lint_command),
+            ("typecheck", project.typecheck_command),
         ):
             if configured:
                 commands[name] = tuple(replacements.get(part, part) for part in configured)

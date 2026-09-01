@@ -17,7 +17,7 @@ type ProjectDialogProps = {
   onSave: (project: ProjectResponse) => void;
 };
 
-type DialogTab = "existing" | "create" | "settings";
+type DialogTab = "existing" | "create" | "settings" | "commands";
 
 export function ProjectDialog({
   open,
@@ -40,6 +40,8 @@ export function ProjectDialog({
   const [settingsName, setSettingsName] = useState("");
   const [testCommand, setTestCommand] = useState("");
   const [buildCommand, setBuildCommand] = useState("");
+  const [lintCommand, setLintCommand] = useState("");
+  const [typecheckCommand, setTypecheckCommand] = useState("");
   const [ignoredNames, setIgnoredNames] = useState("");
   const [projectPrompt, setProjectPrompt] = useState("");
 
@@ -48,6 +50,8 @@ export function ProjectDialog({
     setSettingsName(project.name);
     setTestCommand(commandToText(project.test_command));
     setBuildCommand(commandToText(project.build_command));
+    setLintCommand(commandToText(project.lint_command));
+    setTypecheckCommand(commandToText(project.typecheck_command));
     setIgnoredNames(project.ignored_names.join(", "));
     setProjectPrompt(project.prompt);
   }, [project]);
@@ -66,6 +70,8 @@ export function ProjectDialog({
       name: settingsName.trim(),
       test_command: textToCommand(testCommand),
       build_command: textToCommand(buildCommand),
+      lint_command: textToCommand(lintCommand),
+      typecheck_command: textToCommand(typecheckCommand),
       ignored_names: ignoredNames.split(",").map((item) => item.trim()).filter(Boolean),
       prompt: projectPrompt.trim(),
     });
@@ -108,6 +114,15 @@ export function ProjectDialog({
               onClick={() => setTab("settings")}
             >
               项目设置
+            </button>
+          )}
+          {project && (
+            <button
+              className={tab === "commands" ? "project-dialog__tab--active" : ""}
+              type="button"
+              onClick={() => setTab("commands")}
+            >
+              命令配置
             </button>
           )}
         </nav>
@@ -203,24 +218,6 @@ export function ProjectDialog({
               />
             </label>
             <label>
-              测试命令参数
-              <textarea
-                rows={3}
-                value={testCommand}
-                placeholder={"每行一个参数，例如：\nnpm\ntest"}
-                onChange={(event) => setTestCommand(event.target.value)}
-              />
-            </label>
-            <label>
-              构建命令参数
-              <textarea
-                rows={3}
-                value={buildCommand}
-                placeholder={"每行一个参数，例如：\nnpm\nrun\nbuild"}
-                onChange={(event) => setBuildCommand(event.target.value)}
-              />
-            </label>
-            <label>
               忽略目录（逗号分隔）
               <textarea
                 rows={2}
@@ -228,9 +225,6 @@ export function ProjectDialog({
                 onChange={(event) => setIgnoredNames(event.target.value)}
               />
             </label>
-            <p className="project-dialog__note">
-              命令按参数逐行保存，不经过 Shell；可使用 {"{workspace}"} 表示 Agent 隔离目录。
-            </p>
             <button
               className="project-dialog__primary"
               type="button"
@@ -238,6 +232,60 @@ export function ProjectDialog({
               onClick={saveSettings}
             >
               <Settings2 size={15} />保存项目设置
+            </button>
+          </div>
+        )}
+
+        {tab === "commands" && project && (
+          <div className="project-dialog__body">
+            <div className="project-dialog__command-grid">
+              <label>
+                测试命令参数
+                <textarea
+                  rows={3}
+                  value={testCommand}
+                  placeholder={"每行一个参数，例如：\nnpm\ntest"}
+                  onChange={(event) => setTestCommand(event.target.value)}
+                />
+              </label>
+              <label>
+                构建命令参数
+                <textarea
+                  rows={3}
+                  value={buildCommand}
+                  placeholder={"每行一个参数，例如：\nnpm\nrun\nbuild"}
+                  onChange={(event) => setBuildCommand(event.target.value)}
+                />
+              </label>
+              <label>
+                代码检查命令参数
+                <textarea
+                  rows={3}
+                  value={lintCommand}
+                  placeholder={"每行一个参数，例如：\nnpm\nrun\nlint"}
+                  onChange={(event) => setLintCommand(event.target.value)}
+                />
+              </label>
+              <label>
+                类型检查命令参数
+                <textarea
+                  rows={3}
+                  value={typecheckCommand}
+                  placeholder={"每行一个参数，例如：\nnpm\nrun\ntypecheck"}
+                  onChange={(event) => setTypecheckCommand(event.target.value)}
+                />
+              </label>
+            </div>
+            <p className="project-dialog__note">
+              命令按参数逐行保存，不经过 Shell；可使用 {"{workspace}"} 表示当前项目目录。
+            </p>
+            <button
+              className="project-dialog__primary"
+              type="button"
+              disabled={busy || !settingsName.trim()}
+              onClick={saveSettings}
+            >
+              <Settings2 size={15} />保存命令配置
             </button>
           </div>
         )}

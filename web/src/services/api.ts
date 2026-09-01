@@ -11,6 +11,8 @@ export type ProjectResponse = {
   relative_path: string;
   test_command: string[] | null;
   build_command: string[] | null;
+  lint_command: string[] | null;
+  typecheck_command: string[] | null;
   ignored_names: string[];
   prompt: string;
   created_at: string;
@@ -360,7 +362,13 @@ export function updateProject(
   projectId: string,
   project: Pick<
     ProjectResponse,
-    "name" | "test_command" | "build_command" | "ignored_names" | "prompt"
+    | "name"
+    | "test_command"
+    | "build_command"
+    | "lint_command"
+    | "typecheck_command"
+    | "ignored_names"
+    | "prompt"
   >,
 ): Promise<ProjectResponse> {
   return patchJson<ProjectResponse>(`/api/projects/${projectId}`, project);

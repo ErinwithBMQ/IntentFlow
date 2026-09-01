@@ -487,6 +487,8 @@ async def test_session_api_creates_and_restores_ask_messages(tmp_path, monkeypat
         name=project.name,
         test_command=project.test_command,
         build_command=project.build_command,
+        lint_command=project.lint_command,
+        typecheck_command=project.typecheck_command,
         ignored_names=project.ignored_names,
         prompt="默认使用中文，并优先复用现有组件。",
     )

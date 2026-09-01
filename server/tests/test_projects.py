@@ -76,7 +76,31 @@ def test_registry_creates_a_dependency_free_web_template(tmp_path: Path) -> None
     assert package["scripts"] == {"test": "node --test", "build": "node build.mjs"}
     assert project.test_command == ["npm", "test"]
     assert project.build_command == ["npm", "run", "build"]
+    assert project.lint_command is None
+    assert project.typecheck_command is None
     assert (root / "src" / "main.js").is_file()
+
+
+def test_registry_detects_lint_and_typecheck_package_scripts(tmp_path: Path) -> None:
+    project_root = tmp_path / "typed-web"
+    project_root.mkdir()
+    (project_root / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "lint": "eslint .",
+                    "type-check": "tsc --noEmit",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = ProjectRegistry(tmp_path / "runtime-data" / "intentflow.db", tmp_path)
+
+    project = registry.register(project_root)
+
+    assert project.lint_command == ["npm", "run", "lint"]
+    assert project.typecheck_command == ["npm", "run", "type-check"]
 
 
 def test_registry_updates_safe_command_and_ignore_configuration(tmp_path: Path) -> None:
@@ -90,6 +114,8 @@ def test_registry_updates_safe_command_and_ignore_configuration(tmp_path: Path) 
         name="Renamed",
         test_command=["python", "-m", "pytest"],
         build_command=None,
+        lint_command=["python", "-m", "ruff", "check", "."],
+        typecheck_command=["python", "-m", "mypy", "."],
         ignored_names=["generated", "nested/path"],
         prompt="默认使用中文，并保持现有代码风格。",
     )
@@ -97,11 +123,34 @@ def test_registry_updates_safe_command_and_ignore_configuration(tmp_path: Path) 
     assert updated.name == "Renamed"
     assert updated.test_command == ["python", "-m", "pytest"]
     assert updated.build_command is None
+    assert updated.lint_command == ["python", "-m", "ruff", "check", "."]
+    assert updated.typecheck_command == ["python", "-m", "mypy", "."]
     assert "generated" in updated.ignored_names
     assert "nested/path" not in updated.ignored_names
     assert "node_modules" in updated.ignored_names
     assert updated.prompt == "默认使用中文，并保持现有代码风格。"
     assert ProjectRegistry(registry.database_path, tmp_path).get(project.id) == updated
+
+
+def test_run_manager_maps_all_configured_command_ids(tmp_path: Path) -> None:
+    project = ProjectRecord(
+        id="project-1",
+        name="demo",
+        root_path=str(tmp_path),
+        test_command=["test-tool"],
+        build_command=["build-tool"],
+        lint_command=["lint-tool", "{workspace}"],
+        typecheck_command=["typecheck-tool", "{project}"],
+    )
+
+    commands = RunManager._project_commands(project, tmp_path, tmp_path)
+
+    assert commands == {
+        "test": ("test-tool",),
+        "build": ("build-tool",),
+        "lint": ("lint-tool", str(tmp_path)),
+        "typecheck": ("typecheck-tool", str(tmp_path)),
+    }
 
 
 async def test_project_api_registers_creates_and_switches_projects(
@@ -149,6 +198,8 @@ async def test_project_api_registers_creates_and_switches_projects(
                 "name": "Existing",
                 "test_command": None,
                 "build_command": None,
+                "lint_command": ["npm", "run", "lint"],
+                "typecheck_command": ["npm", "run", "typecheck"],
                 "ignored_names": [],
                 "prompt": "所有回复使用中文。",
             },
@@ -167,6 +218,8 @@ async def test_project_api_registers_creates_and_switches_projects(
     assert switched.json()["id"] == registered.json()["id"]
     assert updated.status_code == 200
     assert updated.json()["prompt"] == "所有回复使用中文。"
+    assert updated.json()["lint_command"] == ["npm", "run", "lint"]
+    assert updated.json()["typecheck_command"] == ["npm", "run", "typecheck"]
     assert len(projects.json()) == 2
 
 

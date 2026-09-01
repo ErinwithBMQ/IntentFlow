@@ -467,12 +467,14 @@ class ApplyPatchTool(BaseTool):
 
 
 class RunCommandArguments(BaseModel):
-    command: Literal["test", "build"]
+    command: Literal["test", "build", "lint", "typecheck"]
 
 
 class RunCommandTool(BaseTool):
     name = "run_command"
-    description = "Run one pre-approved project command by its test or build identifier."
+    description = (
+        "Run one pre-approved project command by its test, build, lint, or typecheck identifier."
+    )
     arguments_model = RunCommandArguments
     timeout_seconds = 60
 

@@ -135,6 +135,8 @@ class UpdateProjectRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     test_command: list[str] | None = None
     build_command: list[str] | None = None
+    lint_command: list[str] | None = None
+    typecheck_command: list[str] | None = None
     ignored_names: list[str] = Field(default_factory=list)
     prompt: str | None = Field(default=None, max_length=20_000)
 
@@ -267,6 +269,8 @@ async def update_project(
             name=request.name,
             test_command=request.test_command,
             build_command=request.build_command,
+            lint_command=request.lint_command,
+            typecheck_command=request.typecheck_command,
             ignored_names=request.ignored_names,
             prompt=request.prompt,
         )

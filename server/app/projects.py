@@ -29,6 +29,8 @@ class ProjectRecord(BaseModel):
     relative_path: str = ""
     test_command: list[str] | None = None
     build_command: list[str] | None = None
+    lint_command: list[str] | None = None
+    typecheck_command: list[str] | None = None
     ignored_names: list[str] = Field(default_factory=lambda: sorted(DEFAULT_IGNORED_NAMES))
     prompt: str = Field(default="", max_length=PROJECT_PROMPT_MAX_CHARACTERS)
     created_at: str = ""
@@ -106,6 +108,8 @@ class ProjectRegistry:
                 relative_path=self._relative_path(root),
                 test_command=self._detect_test_command(root),
                 build_command=self._detect_build_command(root),
+                lint_command=self._detect_lint_command(root),
+                typecheck_command=self._detect_typecheck_command(root),
                 created_at=now,
                 updated_at=now,
                 last_opened_at=now,
@@ -114,9 +118,10 @@ class ProjectRegistry:
                 """
                 INSERT INTO projects (
                   id, name, relative_path, root_path, root_key,
-                  test_command_json, build_command_json, ignored_names_json,
+                  test_command_json, build_command_json, lint_command_json,
+                  typecheck_command_json, ignored_names_json,
                   created_at, updated_at, last_opened_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project.id,
@@ -126,6 +131,8 @@ class ProjectRegistry:
                     root_key,
                     _json_or_none(project.test_command),
                     _json_or_none(project.build_command),
+                    _json_or_none(project.lint_command),
+                    _json_or_none(project.typecheck_command),
                     json.dumps(project.ignored_names, ensure_ascii=False),
                     now,
                     now,
@@ -186,6 +193,8 @@ class ProjectRegistry:
         name: str,
         test_command: list[str] | None,
         build_command: list[str] | None,
+        lint_command: list[str] | None,
+        typecheck_command: list[str] | None,
         ignored_names: list[str],
         prompt: str | None = None,
     ) -> ProjectRecord:
@@ -205,6 +214,8 @@ class ProjectRegistry:
         )
         clean_test = _validate_command(test_command)
         clean_build = _validate_command(build_command)
+        clean_lint = _validate_command(lint_command)
+        clean_typecheck = _validate_command(typecheck_command)
         clean_prompt = project.prompt if prompt is None else prompt.strip()
         if len(clean_prompt) > PROJECT_PROMPT_MAX_CHARACTERS:
             raise ProjectRegistrationError("项目 Prompt 不能超过 20000 个字符")
@@ -214,6 +225,7 @@ class ProjectRegistry:
                 """
                 UPDATE projects
                 SET name = ?, test_command_json = ?, build_command_json = ?,
+                    lint_command_json = ?, typecheck_command_json = ?,
                     ignored_names_json = ?, prompt = ?, updated_at = ?
                 WHERE id = ?
                 """,
@@ -221,6 +233,8 @@ class ProjectRegistry:
                     normalized_name,
                     _json_or_none(clean_test),
                     _json_or_none(clean_build),
+                    _json_or_none(clean_lint),
+                    _json_or_none(clean_typecheck),
                     json.dumps(clean_ignored, ensure_ascii=False),
                     clean_prompt,
                     now,
@@ -268,6 +282,8 @@ class ProjectRegistry:
                   root_key TEXT,
                   test_command_json TEXT,
                   build_command_json TEXT,
+                  lint_command_json TEXT,
+                  typecheck_command_json TEXT,
                   ignored_names_json TEXT,
                   prompt TEXT NOT NULL DEFAULT '',
                   created_at TEXT NOT NULL DEFAULT '',
@@ -288,6 +304,8 @@ class ProjectRegistry:
                 "root_key": "TEXT",
                 "test_command_json": "TEXT",
                 "build_command_json": "TEXT",
+                "lint_command_json": "TEXT",
+                "typecheck_command_json": "TEXT",
                 "ignored_names_json": "TEXT",
                 "prompt": "TEXT NOT NULL DEFAULT ''",
                 "created_at": "TEXT NOT NULL DEFAULT ''",
@@ -312,15 +330,22 @@ class ProjectRegistry:
                 )
                 test_command = row["test_command_json"]
                 build_command = row["build_command_json"]
+                lint_command = row["lint_command_json"]
+                typecheck_command = row["typecheck_command_json"]
                 if root_text and not test_command:
                     test_command = _json_or_none(self._detect_test_command(root))
                 if root_text and not build_command:
                     build_command = _json_or_none(self._detect_build_command(root))
+                if root_text and not lint_command:
+                    lint_command = _json_or_none(self._detect_lint_command(root))
+                if root_text and not typecheck_command:
+                    typecheck_command = _json_or_none(self._detect_typecheck_command(root))
                 connection.execute(
                     """
                     UPDATE projects
                     SET root_path = ?, root_key = ?, test_command_json = ?,
-                        build_command_json = ?, ignored_names_json = ?,
+                        build_command_json = ?, lint_command_json = ?,
+                        typecheck_command_json = ?, ignored_names_json = ?,
                         created_at = ?, updated_at = ?, last_opened_at = ?
                     WHERE id = ?
                     """,
@@ -329,6 +354,8 @@ class ProjectRegistry:
                         self._path_key(root) if root_text else "",
                         test_command,
                         build_command,
+                        lint_command,
+                        typecheck_command,
                         ignored,
                         row["created_at"] or now,
                         row["updated_at"] or now,
@@ -379,6 +406,8 @@ class ProjectRegistry:
             relative_path=row["relative_path"],
             test_command=_load_command(row["test_command_json"]),
             build_command=_load_command(row["build_command_json"]),
+            lint_command=_load_command(row["lint_command_json"]),
+            typecheck_command=_load_command(row["typecheck_command_json"]),
             ignored_names=_load_ignored(row["ignored_names_json"]),
             prompt=row["prompt"] or "",
             created_at=row["created_at"],
@@ -414,6 +443,26 @@ class ProjectRegistry:
             return [node, str(vite), "build", "{workspace}"]
         if script:
             return ["npm", "run", "build"]
+        return None
+
+    @staticmethod
+    def _detect_lint_command(root: Path) -> list[str] | None:
+        package = _read_package_json(root)
+        scripts = package.get("scripts") if package else None
+        script = str(scripts.get("lint", "")) if isinstance(scripts, dict) else ""
+        if script:
+            return ["npm", "run", "lint"]
+        return None
+
+    @staticmethod
+    def _detect_typecheck_command(root: Path) -> list[str] | None:
+        package = _read_package_json(root)
+        scripts = package.get("scripts") if package else None
+        if not isinstance(scripts, dict):
+            return None
+        for script_name in ("typecheck", "type-check"):
+            if str(scripts.get(script_name, "")):
+                return ["npm", "run", script_name]
         return None
 
     @staticmethod

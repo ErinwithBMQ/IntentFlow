@@ -229,6 +229,39 @@ async def test_successful_command_is_recorded_as_passed_verification(tmp_path) -
     assert execution.result.verification_status == "passed"
 
 
+@pytest.mark.parametrize("command_id", ["lint", "typecheck"])
+async def test_extended_verification_commands_are_supported(tmp_path, command_id: str) -> None:
+    execution = await ToolRegistry().execute(
+        ToolCall(
+            id=f"{command_id}-success",
+            name="run_command",
+            arguments={"command": command_id},
+        ),
+        ToolContext(
+            tmp_path,
+            {command_id: (sys.executable, "-c", "print('ok')")},
+        ),
+    )
+
+    assert execution.result.ok is True
+    assert execution.result.verification_status == "passed"
+
+
+async def test_run_command_rejects_arbitrary_shell_input(tmp_path) -> None:
+    execution = await ToolRegistry().execute(
+        ToolCall(
+            id="shell-command",
+            name="run_command",
+            arguments={"command": "npm install"},
+        ),
+        ToolContext(tmp_path, {"npm install": ("npm", "install")}),
+    )
+
+    assert execution.result.ok is False
+    assert execution.result.error is not None
+    assert execution.result.error.kind == "invalid_arguments"
+
+
 async def test_failed_command_retains_key_failure_from_long_output(tmp_path) -> None:
     command = (
         sys.executable,

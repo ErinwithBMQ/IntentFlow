@@ -71,6 +71,8 @@ describe("getHealth", () => {
       name: "demo",
       test_command: null,
       build_command: null,
+      lint_command: ["npm", "run", "lint"],
+      typecheck_command: ["npm", "run", "typecheck"],
       ignored_names: ["node_modules"],
       prompt: "默认使用中文。",
     });
@@ -83,6 +85,8 @@ describe("getHealth", () => {
           name: "demo",
           test_command: null,
           build_command: null,
+          lint_command: ["npm", "run", "lint"],
+          typecheck_command: ["npm", "run", "typecheck"],
           ignored_names: ["node_modules"],
           prompt: "默认使用中文。",
         }),
